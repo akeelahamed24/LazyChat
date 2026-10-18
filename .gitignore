@@ -74,3 +74,6 @@ hyperframes/
 compositions/work-*/
 compositions/.out.hf-transaction-*
 compositions/.hyperframes/
+
+# Qt desktop wrapper (superseded — Omnia is a pure Next.js web app)
+Desktop/
