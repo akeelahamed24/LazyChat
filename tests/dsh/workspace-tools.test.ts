@@ -208,4 +208,30 @@ describe("workspace tools in chat", () => {
       /exactly once/,
     );
   });
+
+  it("ws_working_directory shows and changes cwd", async () => {
+    const client = await FalkorClient.get();
+    const root = tmpRoot();
+    fs.mkdirSync(path.join(root, "subdir"));
+    const ws = await createWorkspace(client, { name: "CWD WS", path: root });
+    WS_IDS.push(ws.id);
+    const tools = buildWorkspaceTools({ workspaceId: ws.id, root });
+
+    const initial = (await call(tools.ws_working_directory, { path: "" })) as unknown as {
+      path: string;
+      workspace_root: string;
+    };
+    assert.equal(initial.path, ".");
+    assert.equal(initial.workspace_root, root);
+
+    const changed = (await call(tools.ws_working_directory, { path: "subdir" })) as unknown as {
+      path: string;
+    };
+    assert.equal(changed.path, "subdir");
+
+    const reset = (await call(tools.ws_working_directory, { path: "" })) as unknown as {
+      path: string;
+    };
+    assert.equal(reset.path, ".");
+  });
 });

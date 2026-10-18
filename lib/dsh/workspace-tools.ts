@@ -96,6 +96,21 @@ function rgAvailable(): boolean {
   }
 }
 
+/** Per-workspace current working directory, for the working_directory tool. */
+const cwdMap = new Map<string, string>();
+
+function cwdFor(workspaceId: string, root: string): string {
+  const cwd = cwdMap.get(workspaceId);
+  if (!cwd) return root;
+  try {
+    resolveIn(root, cwd);
+    return cwd;
+  } catch {
+    cwdMap.delete(workspaceId);
+    return root;
+  }
+}
+
 const IMAGE_MIME: Record<string, string> = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
@@ -257,18 +272,19 @@ export function buildWorkspaceTools(ctx: WorkspaceToolCtx) {
     }),
 
     ws_shell: tool({
-      description: `Run a shell command with the workspace folder as cwd (bash, 120s timeout). Use for builds, tests, git, scripts — anything the task needs executed. Output truncated to ~12k chars. The command and outcome are remembered in workspace memory.`,
+      description: `Run a shell command in the workspace's current directory (bash, 120s timeout). Use for builds, tests, git, scripts — anything the task needs executed. Output truncated to ~12k chars. The command and outcome are remembered in workspace memory.`,
       inputSchema: z.object({
         command: z.string().describe("Bash command, e.g. 'npm test' or 'git status --short'"),
         timeout_s: z.number().min(5).max(600).default(120).describe("Timeout in seconds"),
       }),
       execute: async ({ command, timeout_s }) => {
         const started = Date.now();
+        const cwd = cwdFor(workspaceId, root);
         const result = await new Promise<{ code: number; out: string }>((resolve) => {
           execFile(
             "bash",
             ["-lc", command],
-            { cwd: root, timeout: (timeout_s || 120) * 1000, maxBuffer: 4 * 1024 * 1024 },
+            { cwd, timeout: (timeout_s || 120) * 1000, maxBuffer: 4 * 1024 * 1024 },
             (err, stdout, stderr) => {
               const out = (stdout || "") + (stderr ? `\n[stderr]\n${stderr}` : "");
               resolve({ code: err ? (typeof (err as { code?: unknown }).code === "number" ? ((err as { code: number }).code as number) : 1) : 0, out });
@@ -529,6 +545,24 @@ export function buildWorkspaceTools(ctx: WorkspaceToolCtx) {
           default:
             throw new Error(`Unknown command: ${args.command}`);
         }
+      },
+    }),
+
+    ws_working_directory: tool({
+      description: `Show or change the current working directory within the attached workspace. Default returns the root. Pass a workspace-relative path to cd into a subdirectory — subsequent ws_shell calls run from the new directory. Pass "" to reset to root.`,
+      inputSchema: z.object({
+        path: z.string().default("").describe("Workspace-relative directory to cd into, or empty to reset"),
+      }),
+      execute: async ({ path: rel }) => {
+        if (rel === "") {
+          cwdMap.delete(workspaceId);
+          return { path: ".", workspace_root: root };
+        }
+        const target = resolveIn(root, rel);
+        const st = fs.statSync(target);
+        if (!st.isDirectory()) throw new Error(`Not a directory: ${rel}`);
+        cwdMap.set(workspaceId, rel);
+        return { path: rel, workspace_root: root };
       },
     }),
   };
