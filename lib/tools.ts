@@ -22,6 +22,7 @@ import { buildAskUserQuestionTool } from "@/lib/ask-user-tool";
 import { buildGoalTools } from "@/lib/goals";
 import { buildPlanModeTool } from "@/lib/plan-mode";
 import { buildScheduleTools } from "@/lib/schedules";
+import { buildAgentTools } from "@/lib/agent-tools";
 
 
 const ARTIFACT_TYPES: ArtifactType[] = [
@@ -532,6 +533,61 @@ export function enabledTools(names: string[], opts: EnabledToolsOpts) {
     ...buildScheduleTools(opts.conversationId),
     ...buildPlanModeTool(opts),
   };
+
+  // Agent management + subagent delegation (dsh-tool-subagent,
+  // dsh-tool-agent-control). Always available — agents are visible across
+  // the session.
+  Object.assign(out, buildAgentTools({
+    conversationId: opts.conversationId,
+    provider: opts.provider,
+    model: opts.model,
+  }));
+
+  // MCP resource tools (dsh-tool-resources). Always available so the model
+  // can read MCP resources, not just call MCP tools.
+  const { listMCPResources, readMCPResource, listMCPResourceTemplates } =
+    require("@/lib/mcp");
+  out["list_mcp_resource_templates"] = tool({
+    description: `List all MCP resource templates available from connected MCP servers. Use to discover what dynamic resources (URL templates) a server exposes before reading them.`,
+    inputSchema: z.object({}),
+    execute: async () => {
+      const templates = await listMCPResourceTemplates();
+      return { count: templates.length, templates };
+    },
+  });
+  out["list_mcp_resources"] = tool({
+    description: `List all available MCP resources from connected MCP servers. Returns uri, name, mimeType, and server info. Use read_mcp_resource to read a specific resource by uri.`,
+    inputSchema: z.object({}),
+    execute: async () => {
+      const resources = await listMCPResources();
+      return { count: resources.length, resources };
+    },
+  });
+  out["read_mcp_resource"] = tool({
+    description: `Read the contents of an MCP resource identified by its URI. Use after list_mcp_resources to find the uri. Returns text content (truncated to ~20k chars) or base64-encoded binary data.`,
+    inputSchema: z.object({
+      uri: z.string().describe("Resource URI from list_mcp_resources"),
+    }),
+    execute: async ({ uri }) => {
+      const result = await readMCPResource(uri);
+      if (!result) return { error: `Resource not found: ${uri}` };
+      const textContents: string[] = [];
+      const blobContents: string[] = [];
+      for (const c of result.contents) {
+        if (c.text) textContents.push(c.text.slice(0, 20000));
+        if (c.blob) blobContents.push(c.blob.slice(0, 512000));
+      }
+      return {
+        uri,
+        serverId: result.serverId,
+        serverName: result.serverName,
+        text: textContents.join("\n\n").slice(0, 20000),
+        blobs: blobContents.length,
+        mimeType: result.contents[0]?.mimeType,
+      };
+    },
+  });
+
   for (const n of names) {
     if (n === "computerUse") Object.assign(out, buildComputerTools());
     else if (map[n]) out[n] = map[n];

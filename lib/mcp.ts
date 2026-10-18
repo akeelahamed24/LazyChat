@@ -103,6 +103,97 @@ export async function allMCPTools(): Promise<MCPToolInfo[]> {
   return out;
 }
 
+/** List all available MCP resources across connected servers. */
+export async function listMCPResources(): Promise<
+  Array<{ uri: string; name: string; description?: string; mimeType?: string; serverId: string; serverName: string }>
+> {
+  const out: Array<{
+    uri: string;
+    name: string;
+    description?: string;
+    mimeType?: string;
+    serverId: string;
+    serverName: string;
+  }> = [];
+  for (const [serverId, s] of sessions) {
+    try {
+      const res = await s.client.listResources();
+      for (const r of res?.resources || []) {
+        out.push({
+          uri: r.uri,
+          name: r.name ?? r.uri,
+          description: r.description,
+          mimeType: r.mimeType,
+          serverId,
+          serverName: s.def.name,
+        });
+      }
+    } catch {
+      // Server might not support resources — skip
+    }
+  }
+  return out;
+}
+
+/** List all MCP resource templates across connected servers. */
+export async function listMCPResourceTemplates(): Promise<
+  Array<{ uriTemplate: string; name: string; description?: string; mimeType?: string; serverId: string; serverName: string }>
+> {
+  const out: Array<{
+    uriTemplate: string;
+    name: string;
+    description?: string;
+    mimeType?: string;
+    serverId: string;
+    serverName: string;
+  }> = [];
+  for (const [serverId, s] of sessions) {
+    try {
+      const res: any = await s.client.listResourceTemplates();
+      for (const t of res?.templates || []) {
+        out.push({
+          uriTemplate: t.uriTemplate,
+          name: t.name ?? t.uriTemplate,
+          description: t.description,
+          mimeType: t.mimeType,
+          serverId,
+          serverName: s.def.name,
+        });
+      }
+    } catch {
+      // Server might not support resource templates — skip
+    }
+  }
+  return out;
+}
+
+/** Read a specific MCP resource by URI. */
+export async function readMCPResource(uri: string): Promise<{
+  contents: Array<{ text?: string; blob?: string; mimeType?: string }>;
+  serverId: string;
+  serverName: string;
+} | null> {
+  for (const [serverId, s] of sessions) {
+    try {
+      const res = await s.client.readResource({ uri });
+      if (res?.contents?.length) {
+        return {
+          contents: (res.contents || []).map((c: any) => ({
+            text: c.text,
+            blob: c.blob,
+            mimeType: c.mimeType,
+          })),
+          serverId,
+          serverName: s.def.name,
+        };
+      }
+    } catch {
+      // Try next server
+    }
+  }
+  return null;
+}
+
 export async function buildMCPToolSet(): Promise<ToolSet> {
   const set: ToolSet = {};
   for (const [serverId, s] of sessions) {

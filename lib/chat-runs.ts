@@ -142,6 +142,14 @@ const TOOL_ACTIVITY: Record<string, string> = {
   schedule_delete: "Deleting reminder…",
   schedule_update: "Updating reminder…",
   exit_plan_mode: "Submitting plan…",
+  list_agents: "Listing agents…",
+  interrupt_agent: "Stopping agent…",
+  send_message: "Sending message…",
+  subagent: "Spawning subagent…",
+  subagent_fork: "Forking subagent…",
+  list_mcp_resources: "Listing resources…",
+  list_mcp_resource_templates: "Listing resource templates…",
+  read_mcp_resource: "Reading resource…",
 };
 
 function isTerminal(status: ChatRunStatus): boolean {
