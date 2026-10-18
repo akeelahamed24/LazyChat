@@ -19,10 +19,31 @@ export async function POST(req: Request) {
     return jsonError("Invalid request body.");
   }
 
+  // Intercept /plan command — enter plan mode before the run starts.
+  if (typeof body.conversationId === "string") {
+    const msgs = body.messages || [];
+    const lastUser = [...(msgs as any[]).reverse()].find((m: any) => m?.role === "user");
+    if (lastUser) {
+      const textParts = (lastUser.parts || []).filter((p: any) => p.type === "text").map((p: any) => p.text ?? "");
+      const firstLine = textParts.join("\n").split("\n")[0]?.trim() ?? "";
+      if (firstLine === "/plan") {
+        const { enterPlanMode } = await import("@/lib/plan-mode");
+        enterPlanMode(body.conversationId);
+        // Strip the /plan line from the message.
+        const rest = textParts.join("\n").slice(firstLine.length).trim();
+        lastUser.parts = textParts.length > 1 ? [{ type: "text", text: rest }] : [];
+        if (!lastUser.parts.length) {
+          // No text left after stripping /plan — add a placeholder.
+          lastUser.parts = [{ type: "text", text: "Please draft a plan for the work ahead." }];
+        }
+      }
+    }
+  }
+
   try {
     const { settings, model } = await prepareChatRun(body.settings);
 
-    const run = createChatRun({
+    const run = await createChatRun({
       messages: body.messages || [],
       settings,
       model,

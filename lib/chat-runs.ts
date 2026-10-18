@@ -26,6 +26,9 @@ import { cancelRunQuestions, forgetRun } from "@/lib/ask-user";
 import { buildMCPToolSet } from "@/lib/mcp";
 import { buildSystemPrompt } from "@/lib/system";
 import { captureOmniaMemory, messageText, recallForOmnia, recordOmniaTurn } from "@/lib/brain/omnia-memory";
+// Start the schedule/reminder scheduler on server boot.
+import { startScheduler, getPendingReminders, clearPendingReminder } from "@/lib/schedules";
+void startScheduler();
 
 /**
  * Workspace attachment for a run: folder-bound tools + memory briefing.
@@ -115,11 +118,30 @@ const TOOL_ACTIVITY: Record<string, string> = {
   computer_search: "Searching Google…",
   computer_click: "Using the computer…",
   computer_type: "Using the computer…",
-  computer_press: "Using the computer…",
-  computer_scroll: "Using the computer…",
+  computer_press: "Using the keyboard…",
+  computer_scroll: "Scrolling…",
   computer_read: "Reading the browser…",
   computer_screenshot: "Looking at the browser…",
   computer_nav: "Using the computer…",
+  ws_glob: "Finding files…",
+  ws_grep: "Searching files…",
+  ws_read: "Reading a file…",
+  ws_write: "Writing a file…",
+  ws_shell: "Running a command…",
+  ws_todo: "Updating TODOs…",
+  ws_remember: "Recording memory…",
+  ws_str_replace_editor: "Editing a file…",
+  ws_read_image: "Reading an image…",
+  session_search: "Searching conversations…",
+  session_event_read: "Reading history…",
+  create_goal: "Setting a goal…",
+  get_goal: "Checking goal…",
+  update_goal: "Updating goal…",
+  schedule_create: "Scheduling reminder…",
+  schedule_list: "Listing reminders…",
+  schedule_delete: "Deleting reminder…",
+  schedule_update: "Updating reminder…",
+  exit_plan_mode: "Submitting plan…",
 };
 
 function isTerminal(status: ChatRunStatus): boolean {
@@ -250,20 +272,34 @@ function sanitizeToolHistory(messages: UIMessage[]): UIMessage[] {
   return out;
 }
 
-export function createChatRun(input: CreateChatRunInput): ChatRunRecord {
+export async function createChatRun(input: CreateChatRunInput): Promise<ChatRunRecord> {
   const settings: ChatSettings = { ...DEFAULT_SETTINGS, ...(input.settings || {}) };
-  // A previous turn may have been interrupted (user hit Stop, stream error)
-  // leaving tool calls with no results. convertToModelMessages throws
-  // AI_MissingToolResultsError on those, and the poisoned message would fail
-  // every later send — so prune orphan tool calls up front.
-  const requestMessages = sanitizeToolHistory(input.messages || []);
-  if (!requestMessages.length) throw new Error("No messages.");
-
   const conversationId = input.conversationId;
   if (conversationId) {
     const live = activeChatRuns(conversationId)[0];
     if (live) throw new ChatRunConflictError(live.id);
   }
+
+  // Inject any pending reminders as a system message at run start.
+  let requestMessages = sanitizeToolHistory(input.messages || []);
+  if (conversationId) {
+    const pending = await getPendingReminders(conversationId);
+    if (pending.length > 0) {
+      for (const r of pending) {
+        void clearPendingReminder(r.id);
+      }
+      const reminderText = pending
+        .map((r) => `🔔 Reminder: ${r.title}\n${r.prompt}`)
+        .join("\n\n");
+      const reminderMsg: UIMessage = {
+        role: "system",
+        id: nanoid(12),
+        parts: [{ type: "text", text: `Pending reminders for this session:\n\n${reminderText}` }],
+      } as any;
+      requestMessages = [reminderMsg, ...requestMessages];
+    }
+  }
+  if (!requestMessages.length) throw new Error("No messages.");
 
   const last = requestMessages[requestMessages.length - 1];
   const isContinuation = last?.role === "assistant";
@@ -346,6 +382,7 @@ async function pump(run: ChatRunRecord) {
     let system = await buildSystemPrompt({
       provider: settings.provider,
       model: settings.model,
+      conversationId: run.conversationId,
     });
     system = await withWorkspaceBriefing(run, system);
 

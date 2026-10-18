@@ -110,7 +110,7 @@ describe("workspace tools in chat", () => {
     assert.ok(shelled.output.includes("ok"));
   });
 
-  it("tools refuse to leave the root", async () => {
+   it("tools refuse to leave the root", async () => {
     const client = await FalkorClient.get();
     const root = tmpRoot();
     const ws = await createWorkspace(client, { name: "Jail WS", path: root });
@@ -118,5 +118,94 @@ describe("workspace tools in chat", () => {
     const tools = buildWorkspaceTools({ workspaceId: ws.id, root });
     await assert.rejects(call(tools.ws_read, { path: "../outside.txt" }));
     await assert.rejects(call(tools.ws_write, { path: "../../evil.txt", content: "x" }));
+  });
+
+  it("ws_glob finds files matching a pattern", async () => {
+    const client = await FalkorClient.get();
+    const root = tmpRoot();
+    fs.writeFileSync(path.join(root, "a.ts"), "test");
+    fs.writeFileSync(path.join(root, "sub", "b.ts"), "test");
+    fs.writeFileSync(path.join(root, "readme.md"), "# demo");
+    const ws = await createWorkspace(client, { name: "Glob WS", path: root });
+    WS_IDS.push(ws.id);
+    const tools = buildWorkspaceTools({ workspaceId: ws.id, root });
+    const result = (await call(tools.ws_glob, { pattern: "**/*.ts" })) as unknown as {
+      paths: string[];
+      count: number;
+    };
+    assert.ok(result.paths.includes("a.ts"));
+    assert.ok(result.paths.includes("sub/b.ts"));
+    assert.equal(result.count, 2);
+  });
+
+  it("ws_grep searches file contents", async () => {
+    const client = await FalkorClient.get();
+    const root = tmpRoot();
+    fs.writeFileSync(path.join(root, "a.ts"), "hello world\nfoo bar");
+    fs.writeFileSync(path.join(root, "b.ts"), "no match here");
+    const ws = await createWorkspace(client, { name: "Grep WS", path: root });
+    WS_IDS.push(ws.id);
+    const tools = buildWorkspaceTools({ workspaceId: ws.id, root });
+    const result = (await call(tools.ws_grep, { pattern: "hello", path: "" })) as unknown as {
+      results: Array<{ file: string; matches: Array<{ line: number; text: string }> }>;
+      count: number;
+    };
+    assert.equal(result.count, 1);
+    assert.equal(result.results[0].file, "a.ts");
+    assert.equal(result.results[0].matches[0].line, 1);
+  });
+
+  it("ws_str_replace_editor can view, create, and str_replace", async () => {
+    const client = await FalkorClient.get();
+    const root = tmpRoot();
+    const ws = await createWorkspace(client, { name: "Editor WS", path: root });
+    WS_IDS.push(ws.id);
+    const tools = buildWorkspaceTools({ workspaceId: ws.id, root });
+
+    const created = (await call(tools.ws_str_replace_editor, {
+      command: "create",
+      path: "test.txt",
+      file_text: "line one\nline two\nline three",
+    })) as unknown as { path: string };
+    assert.equal(created.path, "test.txt");
+
+    const viewed = (await call(tools.ws_str_replace_editor, {
+      command: "view",
+      path: "test.txt",
+    })) as unknown as { content: string };
+    assert.ok(viewed.content.includes("line one"));
+
+    const replaced = (await call(tools.ws_str_replace_editor, {
+      command: "str_replace",
+      path: "test.txt",
+      old_str: "line two",
+      new_str: "line TWO",
+    })) as unknown as { replacements: number };
+    assert.equal(replaced.replacements, 1);
+
+    const final = (await call(tools.ws_str_replace_editor, {
+      command: "view",
+      path: "test.txt",
+    })) as unknown as { content: string };
+    assert.ok(final.content.includes("line TWO"));
+    assert.ok(!final.content.includes("line two"));
+  });
+
+  it("ws_str_replace_editor rejects non-unique old_str", async () => {
+    const client = await FalkorClient.get();
+    const root = tmpRoot();
+    fs.writeFileSync(path.join(root, "dup.txt"), "same\nline\nsame\nline");
+    const ws = await createWorkspace(client, { name: "Dups WS", path: root });
+    WS_IDS.push(ws.id);
+    const tools = buildWorkspaceTools({ workspaceId: ws.id, root });
+    await assert.rejects(
+      call(tools.ws_str_replace_editor, {
+        command: "str_replace",
+        path: "dup.txt",
+        old_str: "same",
+        new_str: "changed",
+      }),
+      /exactly once/,
+    );
   });
 });

@@ -29,7 +29,7 @@ export async function POST(req: Request) {
   try {
     const { settings, model } = await prepareChatRun(body.settings);
 
-    const run = createChatRun({
+    const run = await createChatRun({
       messages: body.messages || [],
       settings,
       model,

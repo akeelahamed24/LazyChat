@@ -19,6 +19,9 @@ import {
 } from "@/lib/chromium";
 import type { ArtifactType } from "@/lib/types";
 import { buildAskUserQuestionTool } from "@/lib/ask-user-tool";
+import { buildGoalTools } from "@/lib/goals";
+import { buildPlanModeTool } from "@/lib/plan-mode";
+import { buildScheduleTools } from "@/lib/schedules";
 
 
 const ARTIFACT_TYPES: ArtifactType[] = [
@@ -420,6 +423,94 @@ export interface EnabledToolsOpts {
   runId?: string;
 }
 
+/**
+ * Session-query tools: let the model search across its own conversation history.
+ * Ported from dsh-tool-session-query (session_search, session_event_read).
+ * Always available — they only read what the user already has access to.
+ */
+function buildSessionQueryTools(opts: EnabledToolsOpts) {
+  return {
+    session_search: tool({
+      description: `Search across your conversation history (titles and message text). Use this when you need to recall something from a prior chat — a decision, a config value, a code snippet, or an earlier finding. Results are grouped by conversation; each returns the strongest matching excerpt. Query should be a concise phrase of what you're looking for.`,
+      inputSchema: z.object({
+        query: z.string().describe("What to search for — a fact, phrase, or keyword"),
+        limit: z.number().min(1).max(50).default(10).describe("Max conversations to return"),
+      }),
+      execute: async ({ query, limit }) => {
+        const { listConversations, getConversation } = await import("@/lib/store");
+        const { messageText } = await import("@/lib/brain/omnia-memory");
+        const all = await listConversations();
+        const q = query.toLowerCase();
+        const results: Array<{
+          id: string;
+          title: string;
+          snippet: string;
+          score: number;
+        }> = [];
+        for (const c of all) {
+          let bestScore = 0;
+          let bestSnippet = "";
+          // Match in title.
+          if (c.title?.toLowerCase().includes(q)) {
+            bestScore = 2;
+            bestSnippet = `[Title] ${c.title}`;
+          }
+          // Match in messages.
+          for (const m of c.messages || []) {
+            const text = messageText(m as { parts?: Array<{ type: string; text?: string }> });
+            if (!text) continue;
+            const idx = text.toLowerCase().indexOf(q);
+            if (idx >= 0) {
+              const score = 1 + Math.min(idx, 0) / Math.max(text.length, 1);
+              if (score > bestScore || !bestSnippet) {
+                bestScore = Math.max(bestScore, score + 0.5);
+                bestSnippet = text.slice(Math.max(0, idx - 60), idx + 120).replace(/\n/g, " ").trim();
+              }
+            }
+          }
+          if (bestScore > 0) {
+            results.push({ id: c.id, title: c.title, snippet: bestSnippet, score: bestScore });
+          }
+        }
+        results.sort((a, b) => b.score - a.score);
+        return {
+          query,
+          count: results.length,
+          results: results.slice(0, limit).map((r) => ({
+            id: r.id,
+            title: r.title,
+            snippet: r.snippet,
+          })),
+        };
+      },
+    }),
+
+    session_event_read: tool({
+      description: `Read messages from a specific conversation by id. Use session_search first to find a conversation, then this tool to read its exact messages. Returns messages with roles and text content.`,
+      inputSchema: z.object({
+        conversation_id: z.string().describe("Conversation id (from session_search results)"),
+        limit: z.number().min(1).max(100).default(50).describe("Max messages to return, most recent first"),
+      }),
+      execute: async ({ conversation_id, limit }) => {
+        const { getConversation } = await import("@/lib/store");
+        const { messageText } = await import("@/lib/brain/omnia-memory");
+        const conv = await getConversation(conversation_id);
+        if (!conv) return { error: "Conversation not found" };
+        const items = (conv.messages || []).slice(-limit).reverse().map((m: any) => ({
+          role: m.role,
+          text: messageText(m),
+        }));
+        return {
+          id: conv.id,
+          title: conv.title,
+          count: items.length,
+          messages: items,
+        };
+      },
+    }),
+  };
+}
+
 export function enabledTools(names: string[], opts: EnabledToolsOpts) {
   const map: Record<string, any> = {
     webSearch: webSearchTool,
@@ -432,6 +523,14 @@ export function enabledTools(names: string[], opts: EnabledToolsOpts) {
     // confirmation or a missing decision, so it ships in every turn the way dsh
     // composes `tool-ask-user` into every preset.
     ask_user_question: buildAskUserQuestionTool(opts),
+    // Session query tools (dsh-tool-session-query) are always available —
+    // they only read the user's own history, no toggle needed.
+    ...buildSessionQueryTools(opts),
+    // Goals + schedules + plan-mode (dsh-tool-goal, dsh-tool-schedule, dsh-plan-mode).
+    // These drive auto-continuation and planning semantics, so they're always on.
+    ...buildGoalTools(opts.conversationId),
+    ...buildScheduleTools(opts.conversationId),
+    ...buildPlanModeTool(opts),
   };
   for (const n of names) {
     if (n === "computerUse") Object.assign(out, buildComputerTools());
