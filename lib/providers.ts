@@ -28,16 +28,59 @@ export interface BuildModelOptions {
 }
 
 export async function hasProviderKey(provider: ProviderId): Promise<boolean> {
+  const custom = await getCustomProvider(provider);
+  if (custom) return Boolean(resolveApiKey(custom));
   const cfg = PROVIDERS[provider as BuiltinProviderId];
   if (cfg) {
     if (!cfg.requiresKey) return true;
     return Boolean(await resolveBuiltinKey(provider as BuiltinProviderId));
   }
-  return Boolean(await getCustomProvider(provider));
+  return false;
 }
 
 export async function buildLanguageModel(opts: BuildModelOptions): Promise<LanguageModel> {
   const { provider, model } = opts;
+
+  // A custom provider may intentionally shadow a builtin id (e.g. a user
+  // re-added "google" with their own key/base URL). Prefer the custom one.
+  const customShadow = await getCustomProvider(provider);
+  if (customShadow) {
+    if (customShadow.protocol === "gemini") {
+      const apiKey = opts.apiKey || resolveApiKey(customShadow);
+      if (!apiKey) {
+        throw new Error(
+          `Gemini is not configured. Set an API key on the provider (or ${customShadow.apiKeyEnv || "GOOGLE_GENERATIVE_AI_API_KEY"} env).`,
+        );
+      }
+      const raw = (opts.baseUrl || customShadow.baseUrl || "")
+        .trim()
+        .replace(/\/+$/, "");
+      const baseURL = raw.replace(/\/interactions$/i, "");
+      const client = createGoogleGenerativeAI({
+        name: customShadow.id,
+        baseURL: baseURL || undefined,
+        apiKey,
+      });
+      return client.interactions(model);
+    }
+    const apiKey = opts.apiKey || resolveApiKey(customShadow) || "custom";
+    if (customShadow.protocol === "anthropic") {
+      const raw = (opts.baseUrl || customShadow.baseUrl).replace(/\/+$/, "");
+      const baseURL = /\/v1$/i.test(raw) ? raw : `${raw}/v1`;
+      const client = createAnthropic({
+        name: customShadow.id,
+        baseURL,
+        apiKey,
+      });
+      return client(model);
+    }
+    const client = createOpenAICompatible({
+      name: customShadow.id,
+      baseURL: opts.baseUrl || customShadow.baseUrl,
+      apiKey,
+    });
+    return client(model);
+  }
 
   if (!isBuiltinProvider(provider)) {
     const custom = await getCustomProvider(provider);

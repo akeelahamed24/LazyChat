@@ -31,7 +31,12 @@ export async function resolveBuiltinKey(
   const stored = await getStoredProviderKey(provider);
   if (stored) return stored;
   const keyEnv = PROVIDERS[provider]?.keyEnv;
-  return (keyEnv && process.env[keyEnv]) || undefined;
+  if (keyEnv && process.env[keyEnv]) return process.env[keyEnv];
+  // Common aliases for Google/Gemini keys.
+  if (provider === "google") {
+    return process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+  }
+  return undefined;
 }
 
 export async function builtinKeySource(

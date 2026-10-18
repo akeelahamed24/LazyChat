@@ -25,6 +25,7 @@
     "@ai-sdk/openai": "^4.0.56",
     "@ai-sdk/openai-compatible": "^3.0.43",
     "@ai-sdk/react": "^4.0.93",
+    "@codesandbox/sdk": "^2.4.2",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@prefecthq/prefab-ui": "0.20.2",
     "@types/ws": "^8.18.1",

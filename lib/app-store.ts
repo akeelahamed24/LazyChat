@@ -16,7 +16,7 @@ import type {
   SkillDef,
 } from "@/lib/types";
 import { DEFAULT_SETTINGS } from "@/lib/types";
-import { getDefaultModel } from "@/lib/models";
+import { getDefaultModel, PROVIDERS } from "@/lib/models";
 import {
   DEFAULT_DISPLAY,
   clampDisplay,
@@ -329,7 +329,7 @@ export const useAppStore = create<AppStore>()(
     }),
     {
       name: "omnia-store",
-      version: 2,
+      version: 3,
       migrate: (persisted: unknown) => {
         const state = (persisted ?? {}) as Record<string, unknown>;
         // v1 → v2: the default provider changed from Claude to Sarvam. Only
@@ -342,6 +342,12 @@ export const useAppStore = create<AppStore>()(
         // The standalone Workspace tab was folded into chat; land back on chat.
         if ((state as { mainView?: string }).mainView === "workspace") {
           (state as { mainView?: string }).mainView = "chat";
+        }
+        // v2 -> v3: Sarvam (and NVIDIA) are the built-in providers; migrate any
+        // other built-in selection (anthropic/openai/google/...) to Sarvam.
+        const s2 = state.settings as { provider?: string; model?: string } | undefined;
+        if (s2?.provider && s2.provider in PROVIDERS && s2.provider !== "sarvam" && s2.provider !== "nvidia") {
+          state.settings = { ...s2, provider: "sarvam", model: "sarvam-105b" };
         }
         return state;
       },

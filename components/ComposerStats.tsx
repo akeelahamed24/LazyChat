@@ -34,6 +34,8 @@ export function ComposerStats({ chat }: { chat: ChatController }) {
   const setSettings = useAppStore((s) => s.setSettings);
   const [compacting, setCompacting] = React.useState(false);
   const [notice, setNotice] = React.useState<string | null>(null);
+  const [mounted, setMounted] = React.useState(false);
+  React.useEffect(() => setMounted(true), []);
 
   const window = contextWindowOf(settings.provider, settings.model);
   const burned = (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0);
@@ -117,7 +119,7 @@ export function ComposerStats({ chat }: { chat: ChatController }) {
           <Tooltip text="Condense older history into a summary now">
             <button
               onClick={() => void compact(true)}
-              disabled={!activeConversationId || compacting}
+              disabled={compacting}
               className="inline-flex items-center gap-1 rounded-full border border-border px-1.5 py-px font-mono text-[10px] uppercase tracking-wider text-fg-secondary transition-colors hover:border-border-strong hover:bg-bg-hover disabled:opacity-40"
             >
               <Minimize2 size={12} />

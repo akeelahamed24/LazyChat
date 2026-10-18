@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ArrowUp,
   Square,
@@ -121,6 +121,8 @@ export function Composer({
   const [pending, setPending] = useState<FileUIPart[]>([]);
   const [uploading, setUploading] = useState(false);
   const [dragging, setDragging] = useState(false);
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
   const dragDepth = useRef(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -364,7 +366,7 @@ export function Composer({
               ) : (
                 <button
                   onClick={handleSend}
-                  disabled={(!text.trim() && !pending.length) || disabled || !!backgroundRun}
+                  disabled={!mounted || ((!text.trim() && !pending.length) || disabled || !!backgroundRun)}
                   className={cn(
                     "btn-sheen group flex h-8 w-8 items-center justify-center rounded-md border border-[color:var(--brand-button-border)] bg-[color:var(--brand-button)] text-[color:var(--brand-button-text)]",
                     "transition-all hover:brightness-110 hover:shadow-[0_0_0_3px_var(--accent-soft)] active:scale-95 disabled:opacity-35 disabled:grayscale disabled:pointer-events-none",

@@ -213,7 +213,7 @@ export function ModelPicker() {
             </button>
           </div>
           <div className="flex flex-col gap-1 pt-1">
-            {PROVIDER_LIST.map((p) => {
+            {PROVIDER_LIST.filter((p) => p.id === "sarvam").map((p) => {
               const effective = live[p.id] && live[p.id].length ? live[p.id] : p.models;
               return (
               <div key={p.id}>

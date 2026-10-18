@@ -461,11 +461,35 @@ async function pump(run: ChatRunRecord) {
     });
 
     const reader = stream.getReader();
+    const activeTextParts = new Set<string>();
+    const activeReasoningParts = new Set<string>();
     try {
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
-        if (value) pushChunk(run, value);
+        if (!value) continue;
+        const v = value as UIMessageChunk & { id?: string };
+        if (v.type === "text-start" && v.id) activeTextParts.add(v.id);
+        if (v.type === "text-delta" && v.id && !activeTextParts.has(v.id)) {
+          pushChunk(run, { type: "text-start", id: v.id } as UIMessageChunk);
+          activeTextParts.add(v.id);
+        }
+        if (v.type === "text-end" && v.id && !activeTextParts.has(v.id)) {
+          continue;
+        }
+        if (v.type === "text-end" && v.id) activeTextParts.delete(v.id);
+
+        if (v.type === "reasoning-start" && v.id) activeReasoningParts.add(v.id);
+        if (v.type === "reasoning-delta" && v.id && !activeReasoningParts.has(v.id)) {
+          pushChunk(run, { type: "reasoning-start", id: v.id } as UIMessageChunk);
+          activeReasoningParts.add(v.id);
+        }
+        if (v.type === "reasoning-end" && v.id && !activeReasoningParts.has(v.id)) {
+          continue;
+        }
+        if (v.type === "reasoning-end" && v.id) activeReasoningParts.delete(v.id);
+
+        pushChunk(run, value);
       }
     } finally {
       try {

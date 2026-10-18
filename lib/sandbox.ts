@@ -2,14 +2,16 @@ import "server-only";
 import fs from "node:fs";
 import path from "node:path";
 import { currentUser } from "@/lib/auth/context";
+import { CodeSandbox } from "@codesandbox/sdk";
+import type { SandboxClient } from "@codesandbox/sdk";
 
-
-const SANDBOX_URL = process.env.SANDBOX_URL || "http://127.0.0.1:8787";
-export const SANDBOX_BROWSER_WS = `${SANDBOX_URL.replace(/^http/, "ws")}/browser`;
-
-/** Shared secret so only this app can drive the sandbox service. */
-export function sandboxHeaders(extra?: Record<string, string>): Record<string, string> {
-  return { ...(extra ?? {}), ...(process.env.SANDBOX_SECRET ? { "x-sandbox-secret": process.env.SANDBOX_SECRET } : {}) };
+// Created on first use: the SDK throws when CSB_API_KEY is missing, which must not break `next build`, the chat,
+// or any route that merely imports this module.
+let sdkInstance: CodeSandbox | undefined;
+function sdkClient(): CodeSandbox {
+  const key = process.env.CSB_API_KEY || process.env.CODESANDBOX_API_KEY;
+  if (!key) throw new Error("CSB_API_KEY is not set (add it to .env.local to use sandboxes)");
+  return (sdkInstance ??= new CodeSandbox(key));
 }
 
 // Ownership: sandbox id -> uid of the user who created it.
@@ -30,51 +32,47 @@ function recordOwner(id: string, uid: string) {
   fs.writeFileSync(OWNERS_FILE, JSON.stringify(owners));
 }
 
-/** Throws unless the signed-in user owns this sandbox. Outside a request (no user) it is a no-op. */
 export function assertSandboxOwner(id: string): void {
   const u = currentUser();
   if (!u) return;
   if (readOwners()[id] !== u.uid) throw new Error("Sandbox not found");
 }
 
-async function request<T>(
-  method: string,
-  path: string,
-  body?: unknown,
-): Promise<T> {
-  const res = await fetch(`${SANDBOX_URL}${path}`, {
-    method,
-    headers: sandboxHeaders(body ? { "content-type": "application/json" } : undefined),
-    body: body ? JSON.stringify(body) : undefined,
-    cache: "no-store",
-  });
-  const text = await res.text();
-  let data: any = null;
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    data = text;
-  }
-  if (!res.ok) {
-    const msg = typeof data === "string" ? data : data?.error || res.statusText;
-    throw new Error(`sandbox ${method} ${path}: ${msg}`);
-  }
-  return data as T;
+const clientCache = new Map<string, SandboxClient>();
+const metaCache = new Map<string, any>();
+
+async function connect(id: string): Promise<SandboxClient> {
+  const cached = clientCache.get(id);
+  if (cached) return cached;
+  const sandbox = await sdkClient().sandboxes.resume(id);
+  const client = await sandbox.connect();
+  clientCache.set(id, client);
+  return client;
 }
 
-export interface SandboxHealth {
-  ok: boolean;
-  docker: boolean;
-  version?: string;
-  images?: string[];
-  activeContainers?: number;
+async function ensureDir(client: SandboxClient, filePath: string) {
+  const parts = filePath.split("/").filter(Boolean);
+  let cur = "";
+  for (let i = 0; i < parts.length - 1; i++) {
+    cur += "/" + parts[i];
+    try {
+      await client.fs.mkdir(cur, true);
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
-export async function sandboxHealth(): Promise<SandboxHealth> {
+export function sandboxHeaders(extra?: Record<string, string>): Record<string, string> {
+  return { ...(extra ?? {}) };
+}
+
+export async function sandboxHealth() {
   try {
-    return await request<SandboxHealth>("GET", "/health");
-  } catch {
-    return { ok: false, docker: false };
+    await sdkClient().sandboxes.list({ limit: 1 });
+    return { ok: true, docker: true, version: "codesandbox", images: [], activeContainers: clientCache.size };
+  } catch (e: any) {
+    return { ok: false, docker: false, error: e?.message };
   }
 }
 
@@ -87,90 +85,141 @@ export interface CreateSandboxOptions {
 }
 
 export async function createSandbox(opts: CreateSandboxOptions = {}) {
-  const created = await request<any>("POST", "/containers", {
-    image: opts.image || "omnia-sandbox:latest",
-    label: opts.label || "sandbox",
-    env: opts.env || {},
-    workspace: opts.workspace || "/workspace",
-    runner: opts.runner,
-  });
+  const label = opts.label || "sandbox";
+  const sandbox = await sdkClient().sandboxes.create({ title: label });
+  const client = await sandbox.connect();
+  clientCache.set(sandbox.id, client);
+  const meta = {
+    id: sandbox.id,
+    containerId: sandbox.id,
+    image: "codesandbox",
+    state: "ready",
+    label,
+    createdAt: Date.now(),
+    error: undefined,
+    hasBrowser: false,
+  };
+  metaCache.set(sandbox.id, meta);
   const u = currentUser();
-  if (u && created?.id) recordOwner(created.id, u.uid);
-  return created;
+  if (u) recordOwner(sandbox.id, u.uid);
+  return meta;
 }
 
 export async function startSandbox(id: string) {
   assertSandboxOwner(id);
-  return request<any>("POST", `/containers/${id}/start`);
+  await connect(id);
+  return { ok: true };
 }
 
 export async function killSandbox(id: string) {
   assertSandboxOwner(id);
-  return request<any>("POST", `/containers/${id}/kill`);
+  try {
+    await sdkClient().sandboxes.hibernate(id);
+  } catch {
+    /* ignore */
+  }
+  clientCache.delete(id);
 }
 
 export async function deleteSandbox(id: string) {
   assertSandboxOwner(id);
-  return request<any>("DELETE", `/containers/${id}`);
+  try {
+    await sdkClient().sandboxes.delete(id);
+  } catch {
+    /* ignore */
+  }
+  clientCache.delete(id);
+  metaCache.delete(id);
 }
 
 export async function listSandboxes() {
-  const all = await request<any[]>("GET", "/containers");
-  const u = currentUser();
-  if (!u) return all;
+  let all: any = { sandboxes: [] };
+  try {
+    all = await sdkClient().sandboxes.list({ limit: 100 });
+  } catch {
+    /* ignore */
+  }
   const owners = readOwners();
-  return all.filter((c) => owners[c.id] === u.uid);
+  const u = currentUser();
+  const mapped = (all.sandboxes || []).map((s: any) => {
+    const cached = metaCache.get(s.id);
+    if (cached) return cached;
+    return {
+      id: s.id,
+      containerId: s.id,
+      image: "codesandbox",
+      state: "ready",
+      label: s.title || "sandbox",
+      createdAt: s.createdAt ? new Date(s.createdAt).getTime() : Date.now(),
+      error: undefined,
+      hasBrowser: false,
+    };
+  });
+  if (!u) return mapped;
+  return mapped.filter((c: any) => owners[c.id] === u.uid);
 }
 
 export async function sandboxExec(id: string, command: string, opts?: { stream?: boolean; timeout?: number }) {
   assertSandboxOwner(id);
-  return request<any>("POST", `/containers/${id}/exec`, {
-    command,
-    stream: opts?.stream ?? false,
-    timeout: opts?.timeout ?? 120_000,
-  });
+  const client = await connect(id);
+  try {
+    const output = await client.commands.run(command, { cwd: "/workspace" });
+    return { output, stdout: output, stderr: "", exitCode: 0 };
+  } catch (e: any) {
+    return { output: e?.message || String(e), stdout: "", stderr: e?.message || String(e), exitCode: e?.exitCode ?? 1 };
+  }
 }
 
-export async function sandboxWriteFile(id: string, path: string, content: string) {
+export async function sandboxWriteFile(id: string, filePath: string, content: string) {
   assertSandboxOwner(id);
-  return request<any>("POST", `/containers/${id}/write`, { path, content });
+  const client = await connect(id);
+  await ensureDir(client, filePath);
+  await client.fs.writeTextFile(filePath, content, { create: true, overwrite: true });
 }
 
-export async function sandboxReadFile(id: string, path: string): Promise<string> {
+export async function sandboxReadFile(id: string, filePath: string): Promise<string> {
   assertSandboxOwner(id);
-  const res = await request<any>("GET", `/containers/${id}/read?path=${encodeURIComponent(path)}`);
-  return res.content ?? "";
+  const client = await connect(id);
+  return await client.fs.readTextFile(filePath);
 }
 
-export async function sandboxListFiles(id: string, path = "/workspace") {
+export async function sandboxListFiles(id: string, dirPath = "/workspace") {
   assertSandboxOwner(id);
-  const res = await request<any>("GET", `/containers/${id}/list?path=${encodeURIComponent(path)}`);
-  return res.files ?? [];
+  const client = await connect(id);
+  try {
+    const entries = await client.fs.readdir(dirPath);
+    const out = await Promise.all(
+      entries.map(async (e: any) => {
+        let size: number | undefined;
+        try {
+          const st = await client.fs.stat(`${dirPath.replace(/\/$/, "")}/${e.name}`);
+          size = st.size;
+        } catch {
+          /* ignore */
+        }
+        return { name: e.name, type: e.type, path: `${dirPath.replace(/\/$/, "")}/${e.name}`, size };
+      }),
+    );
+    return out;
+  } catch {
+    return [];
+  }
 }
 
-export async function sandboxDownload(id: string, path: string): Promise<Buffer> {
+export async function sandboxDownload(id: string, filePath: string): Promise<Buffer> {
   assertSandboxOwner(id);
-  const res = await fetch(
-    `${SANDBOX_URL}/containers/${id}/download?path=${encodeURIComponent(path)}`,
-    { cache: "no-store" },
-  );
-  if (!res.ok) throw new Error(`sandbox download failed: ${res.status}`);
-  const buf = Buffer.from(await res.arrayBuffer());
-  return buf;
+  const client = await connect(id);
+  const data = await client.fs.readFile(filePath);
+  return Buffer.from(data);
 }
 
 export async function sandboxScreenshot(id: string): Promise<string | null> {
   assertSandboxOwner(id);
-  try {
-    const res = await request<any>("GET", `/containers/${id}/screenshot`);
-    return res.image || null;
-  } catch {
-    return null;
-  }
+  return null;
 }
 
 export function sandboxBrowserWsUrl(id: string): string {
-  return `${SANDBOX_BROWSER_WS}/${id}`;
+  return "";
 }
 
 export async function sandboxResultFiles(id: string, outDir = "/workspace/out") {
