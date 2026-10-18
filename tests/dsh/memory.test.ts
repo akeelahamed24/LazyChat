@@ -7,6 +7,7 @@
  *
  * Run: `npm run test:brain` (sequential files; live graph required)
  */
+import nodePath from "node:path";
 import { after, afterEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -84,7 +85,7 @@ describe("workspace registry", () => {
     const ws = await createWorkspace(client, { name: "Suite WS", path: dir, tags: ["test"] });
     WS_IDS.push(ws.id);
     assert.equal(ws.name, "Suite WS");
-    assert.ok(ws.path.startsWith("/"));
+    assert.ok(nodePath.isAbsolute(ws.path)); // "/..." on POSIX, "C:\..." on Windows
 
     const again = await createWorkspace(client, { name: "Other", path: dir });
     assert.equal(again.id, ws.id, "same directory returns the existing workspace");

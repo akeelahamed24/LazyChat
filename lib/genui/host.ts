@@ -13,7 +13,8 @@ import type { Envelope } from "./envelope";
 export const PREFAB_PROTOCOL_FALLBACK = "2026-01-26";
 
 /**
- * Omnia's palette expressed as the renderer's shadcn variables. The renderer writes `styles.variables` straight onto
+ * Omnia's palette expressed as the renderer's shadcn variables. Chart slots are a distinct categorical set
+ * (blue, green, amber, pink, violet) so pies and unstyled series are never a single hue. The renderer writes `styles.variables` straight onto
  * its root element, so these override its stock neutral theme while keeping its component shapes.
  */
 const THEME_VARIABLES: Record<"light" | "dark", Record<string, string>> = {
@@ -40,11 +41,11 @@ const THEME_VARIABLES: Record<"light" | "dark", Record<string, string>> = {
     "--border": "#dfdfdf",
     "--input": "#d4d4d4",
     "--ring": "#3ecf8e",
-    "--chart-1": "#3ecf8e",
-    "--chart-2": "#097c4f",
-    "--chart-3": "#8fe5bc",
-    "--chart-4": "#0b6bcb",
-    "--chart-5": "#db8e00",
+    "--chart-1": "#3b82f6",
+    "--chart-2": "#10b981",
+    "--chart-3": "#f59e0b",
+    "--chart-4": "#ec4899",
+    "--chart-5": "#8b5cf6",
     "--sidebar": "#f8f8f8",
     "--sidebar-foreground": "#171717",
     "--sidebar-primary": "#3ecf8e",
@@ -77,11 +78,11 @@ const THEME_VARIABLES: Record<"light" | "dark", Record<string, string>> = {
     "--border": "#2e2e2e",
     "--input": "#363636",
     "--ring": "#3ecf8e",
-    "--chart-1": "#3ecf8e",
-    "--chart-2": "#8fe5bc",
-    "--chart-3": "#00c573",
-    "--chart-4": "#52a9ff",
-    "--chart-5": "#f1a10d",
+    "--chart-1": "#60a5fa",
+    "--chart-2": "#34d399",
+    "--chart-3": "#fbbf24",
+    "--chart-4": "#f472b6",
+    "--chart-5": "#a78bfa",
     "--sidebar": "#121212",
     "--sidebar-foreground": "#ededed",
     "--sidebar-primary": "#3ecf8e",
@@ -98,8 +99,18 @@ const THEME_FONTS =
   "html,body{font-family:Inter,ui-sans-serif,system-ui,sans-serif;font-feature-settings:'cv11','ss01';-webkit-font-smoothing:antialiased}" +
   "code,pre,kbd{font-family:'JetBrains Mono',ui-monospace,monospace}";
 
-export function themeStyles(theme: "light" | "dark") {
-  return { variables: THEME_VARIABLES[theme], css: { fonts: THEME_FONTS } };
+/**
+ * The renderer validates `hostContext.styles.variables` against the MCP-Apps key list (`--color-background-primary`
+ * ...); any other key (like shadcn's `--background`) fails its schema and the whole handshake is rejected. Its
+ * `styles.css.fonts` field, however, is injected verbatim as a stylesheet, so the palette rides there as plain CSS
+ * for both themes (the renderer toggles the `dark` class itself) and applies without any further messages.
+ */
+const rules = (selector: string, vars: Record<string, string>) =>
+  `${selector}{${Object.entries(vars).map(([k, v]) => `${k}:${v}`).join(";")}}`;
+
+export function themeStyles(_theme: "light" | "dark") {
+  void _theme;
+  return { css: { fonts: THEME_FONTS + rules(":root", THEME_VARIABLES.light) + rules(":root.dark,.dark", THEME_VARIABLES.dark) } };
 }
 
 export interface HostCallbacks {
@@ -119,6 +130,8 @@ export class PrefabHost {
   private ready = false;
   private theme: "light" | "dark";
   private pending: Envelope | null = null;
+  /** The newest envelope, re-delivered whenever the renderer (re)starts its handshake (iframe reload, retry). */
+  private last: Envelope | null = null;
 
   constructor(
     private readonly post: (message: Json) => void,
@@ -143,6 +156,7 @@ export class PrefabHost {
 
     switch (method) {
       case "ui/initialize":
+        this.ready = false; // a (re)started renderer must finish its handshake before receiving anything
         return void reply({
           protocolVersion: typeof params.protocolVersion === "string" ? params.protocolVersion : PREFAB_PROTOCOL_FALLBACK,
           hostInfo: { name: "Omnia", version: "1.0.0" },
@@ -152,10 +166,10 @@ export class PrefabHost {
       case "ui/notifications/initialized":
         this.ready = true;
         this.cb.onReady();
-        if (this.pending) {
-          const e = this.pending;
+        {
+          const e = this.pending ?? this.last;
           this.pending = null;
-          this.sendEnvelope(e);
+          if (e) this.sendEnvelope(e);
         }
         return;
       case "ui/notifications/size-changed": {
@@ -193,6 +207,7 @@ export class PrefabHost {
 
   /** Deliver (or queue until the handshake finishes) an envelope; it replaces what is on screen. */
   sendEnvelope(envelope: Envelope): void {
+    this.last = envelope;
     if (!this.ready) {
       this.pending = envelope;
       return;

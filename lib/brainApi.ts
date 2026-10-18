@@ -33,6 +33,16 @@ export type GraphEdge = {
 
 export type SubGraph = { nodes: GraphNode[]; edges: GraphEdge[] };
 
+export type OverviewNode = GraphNode & { group: string; degree: number };
+export type Overview = {
+  nodes: OverviewNode[];
+  edges: GraphEdge[];
+  counts: Record<string, number>;
+  relationCounts: Record<string, number>;
+  truncated: boolean;
+  generatedAt: string;
+};
+
 export type TraceStep = {
   tool: string;
   arguments: Record<string, unknown>;
@@ -134,6 +144,8 @@ export const api = {
     }),
 
   schema: () => jsonFetch<SchemaInfo>("/graph/schema"),
+
+  overview: () => jsonFetch<Overview>("/graph/overview"),
 
   subgraph: (node_id: string, depth = 2) =>
     jsonFetch<SubGraph>(

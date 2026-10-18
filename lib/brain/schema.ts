@@ -6,6 +6,7 @@
  */
 import type { FalkorClient } from "./graph";
 import type { BrainNode, SubGraph } from "./types";
+import { NODE_COLORS, displayName } from "./palette";
 
 export const NODE_LABELS = [
   "Person",
@@ -68,24 +69,8 @@ export const RELATIONSHIP_PROPERTIES: Record<string, string[]> = {
   BLOCKED_BY: ["kind"],
 };
 
-/** Colours shared with the frontend legend so both agree on one palette. */
-export const NODE_COLORS: Record<string, string> = {
-  Person: "#38bdf8",
-  Team: "#a78bfa",
-  Service: "#34d399",
-  Ticket: "#fbbf24",
-  Decision: "#f472b6",
-  Document: "#22d3ee",
-  Message: "#94a3b8",
-  Repo: "#fb923c",
-  Session: "#c084fc",
-  Turn: "#818cf8",
-  EpisodicMemory: "#4ade80",
-  SemanticMemory: "#16a34a",
-  ProceduralMemory: "#15803d",
-  Finding: "#e879f9",
-  AgentHandoff: "#f9a8d4",
-};
+/** Colours shared with the frontend: see lib/brain/palette.ts (one palette for every graph). */
+export { NODE_COLORS } from "./palette";
 
 /** Normalise a subgraph into {nodes, edges} with a display name and colour. */
 export function shapeSubgraph(sub: SubGraph): SubGraph {
@@ -108,11 +93,7 @@ export function shapeNode(node: BrainNode): BrainNode {
     id: node.id,
     label,
     labels,
-    name:
-      (props.name as string) ||
-      (props.key as string) ||
-      (props.title as string) ||
-      node.id,
+    name: displayName(label, props, node.id),
     properties: props,
     color: NODE_COLORS[label] ?? "#64748b",
   };

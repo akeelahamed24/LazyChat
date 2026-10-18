@@ -63,7 +63,7 @@ MATCH (b:Service)
 WHERE toLower(b.name) CONTAINS toLower($to_name)
    OR toLower(b.id) CONTAINS toLower($to_name)
    OR any(x IN coalesce(b.aliases, []) WHERE toLower(x) CONTAINS toLower($to_name))
-WITH a, b, shortestPath((a)-[:DEPENDS_ON*..6]-(b)) AS path
+WITH a, b, shortestPath((a)-[:DEPENDS_ON*..6]->(b)) AS path
 RETURN path
 `;
 
@@ -283,23 +283,63 @@ export type FormattedPath = {
   edges: Array<{ type: string; source: string | null; target: string | null }>;
 };
 
-/** Shortest DEPENDS_ON path between two services, formatted for traces. */
+/**
+ * Shortest DEPENDS_ON path between two services (either direction), formatted for traces.
+ *
+ * FalkorDB only supports *directed* shortestPath, so "how are A and B connected?" (which ignores edge direction)
+ * is answered with a breadth-first search over the service dependency edges done here, then the nodes on the
+ * winning path are loaded for the trace.
+ */
 export async function shortestPathBetweenServices(
   client: FalkorClient,
   fromName: string,
   toName: string,
+  maxHops = 6,
 ): Promise<FormattedPath | null> {
-  const rows = await client.query<{ path: RawPath | null }>(SHORTEST_SERVICE_PATH, {
-    from_name: fromName,
-    to_name: toName,
-  });
-  const path = rows[0]?.path;
-  if (!path || !Array.isArray(path.nodes)) return null;
-  const nodes = path.nodes.map((n: RawNode) => nodeToDict(n));
-  const edges = (path.edges ?? []).map((edge: RawEdge, i: number) => ({
-    type: edge.relationshipType ?? "",
-    source: i < nodes.length ? nodes[i].id : null,
-    target: i + 1 < nodes.length ? nodes[i + 1].id : null,
+  const resolve = async (needle: string) =>
+    (
+      await client.query<{ id: string }>(
+        "MATCH (s:Service) WHERE toLower(s.name) CONTAINS toLower($needle) OR toLower(s.id) CONTAINS toLower($needle) " +
+          "OR any(x IN coalesce(s.aliases, []) WHERE toLower(x) CONTAINS toLower($needle)) RETURN s.id AS id ORDER BY s.name LIMIT 1",
+        { needle },
+      )
+    )[0]?.id;
+  const [from, to] = [await resolve(fromName), await resolve(toName)];
+  if (!from || !to) return null;
+  if (from === to) {
+    const n = await client.query("MATCH (s:Service {id: $id}) RETURN s", { id: from });
+    const node = coerceNode(n[0]?.s);
+    return node ? { length: 0, nodes: [node], edges: [] } : null;
+  }
+
+  const edges = await client.query<{ a: string; b: string }>(
+    "MATCH (x:Service)-[:DEPENDS_ON]->(y:Service) RETURN x.id AS a, y.id AS b",
+  );
+  const adj = new Map<string, string[]>();
+  for (const { a, b } of edges) {
+    (adj.get(a) ?? adj.set(a, []).get(a)!).push(b);
+    (adj.get(b) ?? adj.set(b, []).get(b)!).push(a);
+  }
+  const prev = new Map<string, string | null>([[from, null]]);
+  let frontier = [from];
+  for (let hop = 0; hop < maxHops && !prev.has(to); hop++) {
+    const next: string[] = [];
+    for (const id of frontier) for (const nb of adj.get(id) ?? []) if (!prev.has(nb)) (prev.set(nb, id), next.push(nb));
+    frontier = next;
+  }
+  if (!prev.has(to)) return null;
+  const ids: string[] = [];
+  for (let cur: string | null | undefined = to; cur; cur = prev.get(cur)) ids.unshift(cur);
+
+  const rows = await client.query<{ s: RawNode }>("MATCH (s:Service) WHERE s.id IN $ids RETURN s", { ids });
+  const byId = new Map(rows.map((r) => [nodeToDict(r.s).id, nodeToDict(r.s)]));
+  const nodes = ids.map((id) => byId.get(id)).filter((n): n is BrainNode => !!n);
+  const forward = new Set(edges.map((e) => `${e.a}>${e.b}`));
+  const hops = ids.slice(1).map((id, i) => ({
+    type: "DEPENDS_ON",
+    // keep the real direction of each dependency on the path
+    source: forward.has(`${ids[i]}>${id}`) ? ids[i] : id,
+    target: forward.has(`${ids[i]}>${id}`) ? id : ids[i],
   }));
-  return { length: edges.length, nodes, edges };
+  return { length: hops.length, nodes, edges: hops };
 }

@@ -154,6 +154,37 @@ const CONNECTION_KEY = Symbol.for("lazychat.brain.falkordb");
 
 type CachedConnection = { promise: Promise<FalkorClient> };
 
+/**
+ * FalkorDB ships parameters as a `CYPHER name=value ...` prefix in front of the query text, so a parameter whose
+ * name is itself a Cypher keyword (`$cypher`, `$match`, `$return`, `$limit`...) is misparsed as a clause and the
+ * whole query fails with "Invalid input '='". Rename any such parameter (`$cypher` -> `$p_cypher`) in both the
+ * parameter map and the query text, so callers can use natural names.
+ */
+const RESERVED_PARAM_NAMES = new Set(
+  (
+    "cypher explain profile match optional where return with unwind create merge delete detach set remove call yield " +
+    "union all distinct as order by skip limit asc ascending desc descending and or xor not in is null true false " +
+    "case when then else end starts ends contains exists any none single count foreach load csv from using index on " +
+    "drop constraint unique node relationship"
+  ).split(" "),
+);
+
+export function safeParams(cypher: string, params: Record<string, unknown>): { cypher: string; params: Record<string, unknown> } {
+  let text = cypher;
+  const out: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(params)) {
+    if (RESERVED_PARAM_NAMES.has(name.toLowerCase())) {
+      const renamed = `p_${name}`;
+      // `[$]` = a literal dollar sign; the lookahead keeps `$cypher` from matching inside `$cypher_text`.
+      text = text.replace(new RegExp("[$]" + name + "(?![A-Za-z0-9_])", "g"), () => "$" + renamed);
+      out[renamed] = value;
+    } else {
+      out[name] = value;
+    }
+  }
+  return { cypher: text, params: out };
+}
+
 export class FalkorClient {
   readonly graphName: string;
   private readonly db: FalkorDB;
@@ -186,9 +217,9 @@ export class FalkorClient {
     const { falkordb } = brainConfig();
     try {
       const db = await FalkorDB.connect({
-        host: falkordb.host,
-        port: falkordb.port,
+        username: falkordb.username || undefined,
         password: falkordb.password || undefined,
+        socket: { host: falkordb.host, port: falkordb.port, tls: falkordb.tls, connectTimeout: 15_000 } as never,
       });
       return new FalkorClient(db, falkordb.graphName);
     } catch (err) {
@@ -199,8 +230,11 @@ export class FalkorClient {
   }
 
   /** Execute a Cypher query and return its rows. */
-  async query<T = Row>(cypher: string, params: Record<string, unknown> = {}): Promise<T[]> {
+  async query<T = Row>(cypher: string, rawParams: Record<string, unknown> = {}): Promise<T[]> {
     const start = Date.now();
+    const safe = safeParams(cypher, rawParams);
+    const params = safe.params;
+    cypher = safe.cypher;
     try {
       const reply = await this.graph.query(cypher, { params: params as QueryParams });
       const rows = (reply.data ?? []) as T[];

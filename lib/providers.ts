@@ -141,6 +141,21 @@ export async function buildLanguageModel(opts: BuildModelOptions): Promise<Langu
       });
       return client(model);
     }
+    case "nvidia": {
+      if (!resolvedKey) {
+        throw new Error(
+          `NVIDIA is not configured. Paste a key via the 🔑 button in the header, or set ${cfg.keyEnv} in .env.local`,
+        );
+      }
+      // NVIDIA NIM exposes an OpenAI-compatible endpoint; reasoning models return `reasoning_content`, which the
+      // compatible provider maps to reasoning parts.
+      const client = createOpenAICompatible({
+        name: "nvidia",
+        baseURL: baseUrl as string,
+        apiKey: resolvedKey,
+      });
+      return client(model);
+    }
     case "lmstudio": {
       const client = createOpenAICompatible({
         name: "lmstudio",

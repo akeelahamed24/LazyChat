@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui";
 import { PrefabView } from "@/components/genui/PrefabView";
 import { useGenuiEnvelope } from "@/components/genui/useGenuiEnvelope";
 import { sendFromGenUi } from "@/lib/genui/bus";
+import { coerceUi } from "@/lib/genui/partial";
 
 /** Inline card for the render_ui tool: the Prefab UI streams in while the model writes it. */
 export function GenUiCard({
@@ -63,7 +64,7 @@ export function GenUiCard({
       <PrefabView envelope={envelope} streaming={streaming} onUserMessage={sendFromGenUi} />
       {showJson && (
         <pre className="mt-2 max-h-72 overflow-auto rounded-lg border border-border bg-bg-inset p-3 font-mono text-[11px] leading-relaxed animate-fade-in-up">
-          {JSON.stringify(args?.ui ?? {}, null, 2)}
+          {JSON.stringify(coerceUi(args?.ui) ?? {}, null, 2)}
         </pre>
       )}
     </div>

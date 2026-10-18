@@ -7,7 +7,8 @@
  * consumer (the AI SDK's own SSE parser) sees one continuous, gap-free, duplicate-free stream.
  * Heartbeats are swallowed here; the stream always ends with `[DONE]`, an `error` frame if it had to give up.
  */
-import { SseParser, formatFrame } from "@/lib/sse";
+import type { UIMessageChunk } from "ai";
+import { ChunkNormalizer, SseParser, formatFrame } from "@/lib/sse";
 
 export interface ResilientOptions {
   runId: string | null;
@@ -33,6 +34,9 @@ export function resilientSse(first: Response, opts: ResilientOptions): Response 
   const baseDelay = opts.baseDelayMs ?? 500;
   const enc = new TextEncoder();
   let cancelled = false;
+  // Whatever reaches the AI SDK must be a well-formed part lifecycle, even if this stream joined a run mid-way
+  // (reconnect/attach) or a provider misordered its chunks: the SDK throws on "end" without "start".
+  const normalizer = new ChunkNormalizer();
   let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 
   const body = new ReadableStream<Uint8Array>({
@@ -75,7 +79,19 @@ export function resilientSse(first: Response, opts: ResilientOptions): Response 
                 if (!f.data || f.data.includes('"data-heartbeat"')) continue;
                 const id = f.id !== undefined ? Number(f.id) : undefined;
                 if (id !== undefined && Number.isFinite(id)) cursor = id;
-                out(formatFrame(f.data, id));
+                let chunk: unknown;
+                try {
+                  chunk = JSON.parse(f.data);
+                } catch {
+                  chunk = undefined;
+                }
+                if (chunk && typeof chunk === "object" && typeof (chunk as { type?: unknown }).type === "string") {
+                  const fixed = normalizer.push(chunk as UIMessageChunk);
+                  // The event id belongs to the last chunk produced from this frame (it is the resume point).
+                  fixed.forEach((c, i) => out(formatFrame(JSON.stringify(c), i === fixed.length - 1 ? id : undefined)));
+                } else {
+                  out(formatFrame(f.data, id));
+                }
                 attempt = 0; // progress resets the retry budget
               }
             }

@@ -211,6 +211,12 @@ export function ProceduresPanel({
 }
 
 /** Memory panel: what this user has remembered across sessions. */
+/** Keep the first occurrence of each memory id (React keys must be unique). */
+function uniqueById<T extends { id: string }>(items: T[]): T[] {
+  const seen = new Set<string>();
+  return items.filter((x) => !seen.has(x.id) && !!seen.add(x.id));
+}
+
 export function MemoryPanel({
   memories,
   stats,
@@ -242,7 +248,7 @@ export function MemoryPanel({
           ))}
         </div>
       )}
-      {memories.map((m) => (
+      {uniqueById(memories).map((m) => (
         <button
           key={m.id}
           onClick={() => onPick?.(m.id)}

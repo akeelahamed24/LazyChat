@@ -7,9 +7,11 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { parsePartialJson } from "ai";
 
-import { MAX_ENVELOPE_CHARS, repairPartialEnvelope, searchCatalog, validateEnvelope } from "@/lib/genui/envelope";
+import { CHART_COLORS, MAX_ENVELOPE_CHARS, humanize, repairPartialEnvelope, searchCatalog, validateEnvelope } from "@/lib/genui/envelope";
 import { GENUI_EXAMPLE, GENUI_PROMPT } from "@/lib/genui/prompt";
-import { PrefabHost } from "@/lib/genui/host";
+import { PrefabHost, themeStyles } from "@/lib/genui/host";
+import { coerceUi, parsePartialJsonSync } from "@/lib/genui/partial";
+import { buildGenUiTools } from "@/lib/genui/tools";
 
 const view = (children: unknown[]) => ({ version: "0.3", view: { type: "Column", children } });
 
@@ -153,6 +155,17 @@ describe("PrefabHost", () => {
     assert.equal(r.result.hostContext.theme, "dark");
   });
 
+  it("sends theme styles the renderer's schema accepts: no styles.variables, palette as injected CSS", () => {
+    const { host, sent } = setup();
+    host.handle(rpc("ui/initialize", { protocolVersion: "2026-01-26", appInfo: { name: "P", version: "1" }, appCapabilities: {} }, 9));
+    const ctx = (sent[0] as { result: { hostContext: { styles: { variables?: unknown; css: { fonts: string } } } } }).result.hostContext;
+    // The renderer rejects any key outside the MCP-Apps list (e.g. "--background") and aborts the handshake.
+    assert.equal(ctx.styles.variables, undefined);
+    assert.ok(ctx.styles.css.fonts.includes(":root{") && ctx.styles.css.fonts.includes(".dark{"));
+    assert.ok(ctx.styles.css.fonts.includes("--background:#ffffff") && ctx.styles.css.fonts.includes("--background:#171717"));
+    assert.deepEqual(Object.keys(themeStyles("dark")), ["css"]);
+  });
+
   it("queues the envelope until the renderer is initialized, then delivers it as a tool result", () => {
     const { host, sent, events } = setup();
     const env = validateEnvelope(GENUI_EXAMPLE).envelope!;
@@ -184,6 +197,20 @@ describe("PrefabHost", () => {
     assert.equal(byId(6).error?.code, -32601);
   });
 
+  it("redelivers the latest envelope when the renderer restarts its handshake (iframe reload / retry)", () => {
+    const { host, sent } = setup();
+    const env = validateEnvelope(GENUI_EXAMPLE).envelope!;
+    host.handle(rpc("ui/initialize", { protocolVersion: "2026-01-26" }, 1));
+    host.handle(rpc("ui/notifications/initialized", {}));
+    host.sendEnvelope(env);
+    const delivered = () => sent.filter((m) => m.method === "ui/notifications/tool-result").length;
+    assert.equal(delivered(), 1);
+    host.handle(rpc("ui/initialize", { protocolVersion: "2026-01-26" }, 2)); // renderer reloaded
+    assert.equal(host.isReady, false);
+    host.handle(rpc("ui/notifications/initialized", {}));
+    assert.equal(delivered(), 2, "the same UI is shown again after the restart");
+  });
+
   it("ignores junk and only notifies theme changes after the handshake", () => {
     const { host, sent } = setup();
     host.handle("nope");
@@ -193,5 +220,80 @@ describe("PrefabHost", () => {
     host.handle(rpc("ui/notifications/initialized", {}));
     host.setTheme("dark");
     assert.equal((sent.at(-1) as { method: string }).method, "ui/notifications/host-context-changed");
+  });
+});
+
+describe("tolerant model input", () => {
+  const text = JSON.stringify(GENUI_EXAMPLE);
+
+  it("parsePartialJsonSync recovers a value from every prefix and equals the full parse at the end", () => {
+    let recovered = 0;
+    for (let n = 1; n < text.length; n += 7) {
+      const v = parsePartialJsonSync(text.slice(0, n));
+      if (v !== undefined) recovered++;
+    }
+    assert.ok(recovered > text.length / 7 / 2, "most prefixes yield a value");
+    assert.deepEqual(parsePartialJsonSync(text), GENUI_EXAMPLE);
+  });
+
+  it("matches the AI SDK's own partial parser on object prefixes", async () => {
+    for (let n = 30; n < text.length; n += 53) {
+      const mine = parsePartialJsonSync(text.slice(0, n));
+      const theirs = (await parsePartialJson(text.slice(0, n))).value;
+      if (theirs && typeof theirs === "object") assert.ok(mine && typeof mine === "object", `prefix ${n}`);
+    }
+  });
+
+  it("coerceUi unwraps JSON strings, double encoding, stray tags and cut-off tails", () => {
+    assert.deepEqual(coerceUi(GENUI_EXAMPLE), GENUI_EXAMPLE);
+    assert.deepEqual(coerceUi(text), GENUI_EXAMPLE);
+    assert.deepEqual(coerceUi(JSON.stringify(text)), GENUI_EXAMPLE);
+    assert.deepEqual(coerceUi("<arg_value>" + text + "</arg_value>"), GENUI_EXAMPLE);
+    const cut = coerceUi(text.slice(0, Math.floor(text.length * 0.6))) as { view?: unknown };
+    assert.ok(cut && typeof cut === "object" && cut.view, "truncated input still yields a usable object");
+  });
+
+  it("render_ui accepts a string `ui` and the stray-tag case seen in the wild, rejects non-JSON", async () => {
+    const schema = buildGenUiTools().render_ui.inputSchema as unknown as { validate: (v: unknown) => Promise<{ success: boolean; value?: { ui: unknown } }> | { success: boolean; value?: { ui: unknown } } };
+    const ok = await schema.validate({ title: "T", ui: text });
+    assert.ok(ok.success);
+    assert.deepEqual((ok.value as { ui: unknown }).ui, GENUI_EXAMPLE);
+    const polluted = await schema.validate({ ui: text.replace('"rows":"{{ rows }}"', '"rows":"<arg_value>{{ rows }}"') });
+    assert.ok(polluted.success, "stray tag inside a value no longer rejects the call");
+    assert.equal((await schema.validate({ ui: "not json at all" })).success, false);
+    assert.ok((await schema.validate({ ui: GENUI_EXAMPLE })).success);
+  });
+});
+
+describe("chart polish (named, coloured series)", () => {
+  const chart = (props: Record<string, unknown>) => {
+    const v = validateEnvelope({ view: { type: "Column", children: [{ type: "BarChart", data: [], xAxis: "m", ...props }] } });
+    assert.ok(v.ok, v.errors.join("; "));
+    return (v.envelope!.view.children as Array<Record<string, unknown>>)[0];
+  };
+
+  it("humanizes data keys into readable names", () => {
+    assert.equal(humanize("monthlyRevenue"), "Monthly revenue");
+    assert.equal(humanize("net_profit"), "Net profit");
+    assert.equal(humanize("sales"), "Sales");
+  });
+
+  it("names and colours every series, distinct per series, and adds a legend for more than one", () => {
+    const c = chart({ series: [{ dataKey: "grossSales" }, { dataKey: "refunds" }, { dataKey: "net" }] });
+    const series = c.series as Array<{ label: string; color: string }>;
+    assert.deepEqual(series.map((s) => s.label), ["Gross sales", "Refunds", "Net"]);
+    assert.deepEqual(series.map((s) => s.color), CHART_COLORS.slice(0, 3));
+    assert.equal(new Set(series.map((s) => s.color)).size, 3);
+    assert.equal(c.showLegend, true);
+    assert.equal(c.showTooltip, true);
+    assert.equal(c.height, 260);
+  });
+
+  it("never overrides what the model chose, and skips the legend for a single series", () => {
+    const c = chart({ series: [{ dataKey: "v", label: "Visitors", color: "#123456" }], height: 180, showLegend: false });
+    assert.deepEqual(c.series, [{ dataKey: "v", label: "Visitors", color: "#123456" }]);
+    assert.equal(c.height, 180);
+    assert.equal(c.showLegend, false);
+    assert.equal(chart({ series: [{ dataKey: "v" }] }).showLegend, undefined);
   });
 });

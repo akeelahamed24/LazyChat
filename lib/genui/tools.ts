@@ -1,12 +1,34 @@
-import { tool } from "ai";
+import { jsonSchema, tool } from "ai";
 import { z } from "zod";
 import { MAX_ENVELOPE_CHARS, searchCatalog, validateEnvelope } from "./envelope";
+import { coerceUi } from "./partial";
 
 /**
  * Generative-UI tools. `render_ui` shows a Prefab interface inline in the chat; its *input* is the UI, which the
  * client renders progressively while the model is still writing it. The output only reports validation, so a bad
  * UI comes back to the model as precise errors it can fix on its next step.
  */
+const uiShape = z.object({
+  version: z.string().optional().describe('Protocol version, always "0.3"'),
+  view: z.record(z.string(), z.unknown()).describe('Root component, e.g. {"type":"Column","children":[...]}'),
+  state: z.record(z.string(), z.unknown()).optional().describe("Initial client-side state; read with {{ key }}, written by inputs with a matching `name` and by setState actions"),
+  defs: z.record(z.string(), z.unknown()).optional().describe('Reusable subtrees referenced by {"$ref":"name","let":{...}}'),
+});
+
+/** What the model is told: `ui` is an object. */
+const advertised = z.object({
+  title: z.string().max(120).optional().describe("Short title for this UI (shown in the chat)"),
+  ui: uiShape.describe("The Prefab envelope as a JSON object (not a string)"),
+});
+
+/** What we accept: also a JSON string (some models double-encode), with stray tags or a cut-off tail repaired. */
+const accepted = z.object({
+  title: z.string().max(120).optional(),
+  ui: z.preprocess(coerceUi, uiShape),
+});
+
+type RenderUiInput = z.infer<typeof advertised>;
+
 export function buildGenUiTools() {
   return {
     render_ui: tool({
@@ -14,16 +36,11 @@ export function buildGenUiTools() {
         "Show an interactive interface inline in the chat using the Prefab UI protocol: dashboards, KPI cards, charts, data tables, forms, calculators, comparison grids, status boards, wizards, timelines. " +
         "Prefer this over markdown whenever the user would benefit from structure, interactivity or visuals. " +
         "If unsure of a component's props call search_ui_components first. The result tells you whether the UI was valid; if not, fix the listed errors and call render_ui again.",
-      inputSchema: z.object({
-        title: z.string().max(120).optional().describe("Short title for this UI (shown in the chat)"),
-        ui: z
-          .object({
-            version: z.string().optional().describe('Protocol version, always "0.3"'),
-            view: z.record(z.string(), z.unknown()).describe('Root component, e.g. {"type":"Column","children":[...]}'),
-            state: z.record(z.string(), z.unknown()).optional().describe("Initial client-side state; read with {{ key }}, written by inputs with a matching `name` and by setState actions"),
-            defs: z.record(z.string(), z.unknown()).optional().describe('Reusable subtrees referenced by {"$ref":"name","let":{...}}'),
-          })
-          .describe("The Prefab envelope"),
+      inputSchema: jsonSchema<RenderUiInput>(z.toJSONSchema(advertised, { io: "input" }) as never, {
+        validate: (value) => {
+          const r = accepted.safeParse(value);
+          return r.success ? { success: true, value: r.data as RenderUiInput } : { success: false, error: r.error };
+        },
       }),
       execute: async ({ title, ui }) => {
         const v = validateEnvelope(ui);

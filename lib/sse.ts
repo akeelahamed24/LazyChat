@@ -50,6 +50,50 @@ export function coalesceChunks(chunks: readonly UIMessageChunk[], from: number, 
   return out;
 }
 
+/**
+ * Repairs chunk streams that violate the AI SDK's part lifecycle (start -> delta* -> end), which some providers
+ * emit (e.g. `reasoning-end` after `finish-step`, or deltas with no start). The client throws on these
+ * ("Received reasoning-end for missing reasoning part"), so we fix them once on the server:
+ *   - a delta for a part that is not open gets a synthesized start first;
+ *   - an end for a part that is not open is dropped (the part was already closed);
+ *   - a duplicate start for an open part is dropped;
+ *   - `finish-step` / `finish` / `abort` close any parts still open, then pass through.
+ */
+export class ChunkNormalizer {
+  private open = new Map<string, "text" | "reasoning">();
+
+  push(chunk: UIMessageChunk): UIMessageChunk[] {
+    const c = chunk as { type: string; id?: string; providerMetadata?: unknown };
+    const kind = c.type.startsWith("text-") ? "text" : c.type.startsWith("reasoning-") ? "reasoning" : null;
+    if (!kind || c.id === undefined) {
+      if (c.type === "finish-step" || c.type === "finish" || c.type === "abort") {
+        const closing = [...this.open].map(([key, k]) => ({ type: `${k}-end`, id: key.slice(k.length + 1) }) as unknown as UIMessageChunk);
+        this.open.clear();
+        return [...closing, chunk];
+      }
+      return [chunk];
+    }
+    const key = `${kind}:${c.id}`;
+    const phase = c.type.slice(kind.length + 1); // start | delta | end
+    if (phase === "start") {
+      if (this.open.has(key)) return [];
+      this.open.set(key, kind);
+      return [chunk];
+    }
+    if (phase === "delta") {
+      if (this.open.has(key)) return [chunk];
+      this.open.set(key, kind);
+      return [{ type: `${kind}-start`, id: c.id } as unknown as UIMessageChunk, chunk];
+    }
+    if (phase === "end") {
+      if (!this.open.has(key)) return [];
+      this.open.delete(key);
+      return [chunk];
+    }
+    return [chunk];
+  }
+}
+
 export interface SseFrame {
   id?: string;
   data: string;

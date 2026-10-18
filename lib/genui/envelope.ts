@@ -41,6 +41,40 @@ const COMMON_PROPS = new Set([
 /** Components that would load third-party documents into the chat page. */
 const BLOCKED_TYPES = new Set(["Embed"]);
 
+/** Series colours: distinct hues that read on both light and dark backgrounds. */
+export const CHART_COLORS = ["#3b82f6", "#10b981", "#f59e0b", "#ec4899", "#8b5cf6", "#06b6d4", "#f97316", "#ef4444"];
+const CHART_TYPES = new Set(["BarChart", "LineChart", "AreaChart", "RadarChart", "ScatterChart", "RadialChart", "Sparkline"]);
+
+/** "monthlyRevenue" / "monthly_revenue" -> "Monthly revenue". */
+export function humanize(key: string): string {
+  const spaced = key.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").trim();
+  if (!spaced) return key;
+  // sentence case, but keep acronyms (ARR, MRR) as they are
+  const words = spaced.split(" ").map((w) => (w.length > 1 && w === w.toUpperCase() ? w : w.toLowerCase()));
+  const text = words.join(" ");
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/**
+ * Charts the model writes are often bare: no series names, no colours, no legend. Fill those in so every chart is
+ * readable and distinct without the model having to remember: named series, one colour each, a legend when there is
+ * more than one series, a tooltip and a sensible height. Explicit values from the model always win.
+ */
+function polishChart(type: string, props: Node): void {
+  if (CHART_TYPES.has(type) && Array.isArray(props.series)) {
+    const series = props.series as Array<Record<string, unknown>>;
+    series.forEach((s, i) => {
+      if (!isObj(s)) return;
+      if (typeof s.dataKey === "string" && !s.label) s.label = humanize(s.dataKey);
+      if (!s.color) s.color = CHART_COLORS[i % CHART_COLORS.length];
+    });
+    if (props.showLegend === undefined && series.length > 1) props.showLegend = true;
+  }
+  if (type === "PieChart" && props.showLegend === undefined) props.showLegend = true;
+  if ((CHART_TYPES.has(type) || type === "PieChart") && props.showTooltip === undefined) props.showTooltip = true;
+  if ((CHART_TYPES.has(type) || type === "PieChart") && type !== "Sparkline" && props.height === undefined) props.height = 260;
+}
+
 const ALLOWED_ACTIONS = new Set(["setState", "toggleState", "appendState", "popState", "showToast", "sendMessage", "openLink", "closeOverlay"]);
 const ACTION_HINTS: Record<string, string> = {
   toolCall: "tool calls are not available here; use sendMessage to ask the assistant to do something",
@@ -188,6 +222,7 @@ function walkNode(node: unknown, path: string, ctx: Ctx, depth: number): Node | 
     const r = walkValue(v, `${path}.${k}`, ctx, depth + 1);
     if (r !== DROP) out[k] = r;
   }
+  polishChart(type, out);
   if (node.children !== undefined) {
     if (!Array.isArray(node.children)) {
       if (!ctx.lenient) ctx.errors.push(`${path}.children: must be an array of components`);

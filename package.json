@@ -10,7 +10,7 @@
     "sandbox:up": "node scripts/sandbox-up.mjs",
     "sandbox": "node sandbox/server.mjs",
     "sandbox:build": "docker build -t omnia-sandbox:latest sandbox/container",
-    "test:brain": "tsx --test tests/brain/intent.test.ts && tsx --test tests/brain/actions.test.ts && tsx --test tests/brain/capture.test.ts && tsx --test tests/dsh/memory.test.ts && tsx --test tests/dsh/workspace-tools.test.ts && tsx --test tests/dsh/capture.test.ts",
+    "test:brain": "tsx --test tests/brain/palette.test.ts && tsx --test tests/brain/params.test.ts && tsx --test tests/brain/intent.test.ts && tsx --test tests/brain/actions.test.ts && tsx --test tests/brain/capture.test.ts && tsx --test tests/dsh/memory.test.ts && tsx --test tests/dsh/workspace-tools.test.ts && tsx --test tests/dsh/capture.test.ts",
     "test:ui": "tsx --test tests/ui/tool-view.test.ts && tsx --test tests/ui/ask-user.test.ts",
     "seed:admin": "node scripts/seed-super-admin.mjs",
     "test:auth": "tsx --test tests/unit/auth.test.ts tests/unit/chat-store.test.ts tests/unit/sse.test.ts tests/unit/genui.test.ts tests/unit/genui-stream.test.ts tests/unit/documents.test.ts",

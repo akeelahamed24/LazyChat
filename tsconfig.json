@@ -32,6 +32,8 @@
   ],
   "exclude": [
     "node_modules",
+    "data",
+    "data/**",
     "Desktop",
     "hyperframes",
     "hyperframes/**",

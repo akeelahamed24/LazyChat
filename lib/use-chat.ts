@@ -487,7 +487,10 @@ export function useChatController() {
               const messages = await api.reloadStored(cid);
               const localLast = api.chat.messages[api.chat.messages.length - 1];
               const serverLast = messages?.[messages.length - 1];
-              if (messages && !cancelled && (!localLast || serverLast?.id === localLast.id)) {
+              // Never swap what is on screen for an older/shorter stored copy (a save may still be landing).
+              const size = (m?: UIMessage) => (m ? JSON.stringify(m.parts ?? []).length : 0);
+              const stale = !!localLast && serverLast?.id === localLast.id && size(serverLast) < size(localLast);
+              if (messages && !cancelled && !stale && (!localLast || serverLast?.id === localLast.id)) {
                 api.chat.setMessages(messages);
               }
             }

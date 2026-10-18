@@ -69,7 +69,7 @@ async function withWorkspaceBriefing(run: ChatRunRecord, system: string): Promis
 import { getArtifact, readArtifactBuffer } from "@/lib/artifacts";
 import { getConversationMeta, saveConversation } from "@/lib/store";
 import { currentUser } from "@/lib/auth/context";
-import { HEARTBEAT_CHUNK, coalesceChunks, formatFrame } from "@/lib/sse";
+import { ChunkNormalizer, HEARTBEAT_CHUNK, coalesceChunks, formatFrame } from "@/lib/sse";
 
 
 export interface ChatRunRecord {
@@ -104,6 +104,9 @@ export interface ChatRunRecord {
   outputChars?: number;
   /** Settled model usage for the finished run. */
   usage?: { inputTokens: number; outputTokens: number; totalTokens: number };
+  /** Set while the final save is in flight: the run still reads as "running" until the chat is durably stored. */
+  finalizing?: boolean;
+  finalStatus?: ChatRunStatus;
   lastCheckpoint: number;
   writeChain: Promise<void>;
   replayable: boolean;
@@ -496,7 +499,16 @@ async function pump(run: ChatRunRecord) {
   }
 }
 
+const normalizers = new WeakMap<ChatRunRecord, ChunkNormalizer>();
+
+/** Every provider chunk goes through the normalizer so clients only ever see a well-formed part lifecycle. */
 function pushChunk(run: ChatRunRecord, chunk: UIMessageChunk) {
+  let n = normalizers.get(run);
+  if (!n) normalizers.set(run, (n = new ChunkNormalizer()));
+  for (const c of n.push(chunk)) pushNormalized(run, c);
+}
+
+function pushNormalized(run: ChatRunRecord, chunk: UIMessageChunk) {
   if (chunk.type === "abort") run.aborted = true;
   if (chunk.type === "start-step") run.step += 1;
   if (chunk.type === "error") run.error = chunk.errorText;
@@ -602,7 +614,8 @@ async function finishRun(
   status: ChatRunStatus,
   error?: string,
 ) {
-  if (isTerminal(run.status)) return;
+  if (isTerminal(run.status) || run.finalizing) return;
+  run.finalizing = true;
   if (run.aborted && status === "done") status = "stopped";
   // Every stream must end with an explicit terminal frame so clients never have to infer the outcome.
   if (status === "failed" && !run.chunks.some((c) => c.type === "error")) {
@@ -610,7 +623,7 @@ async function finishRun(
   } else if (status === "stopped" && !run.chunks.some((c) => c.type === "abort")) {
     pushChunk(run, { type: "abort" } as UIMessageChunk);
   }
-  run.status = status;
+  run.finalStatus = status;
   run.error =
     status === "failed" ? error || run.error || "Generation failed." : undefined;
   run.activity =
@@ -619,7 +632,11 @@ async function finishRun(
   // holding a promise, and a finished one has already been answered.
   void cancelRunQuestions(run.id);
   forgetRun(run.id);
-  await checkpoint(run, true);
+  // Persist BEFORE the run reads as finished. Clients poll the run list and, once a run is no longer "running",
+  // reload the stored chat; if that happened before this save landed they would replace the full answer on screen
+  // with an older checkpoint (content "dropping" away).
+  await Promise.race([checkpoint(run, true), new Promise<void>((r) => setTimeout(r, 10_000).unref?.())]);
+  run.status = status;
   emit(run);
 }
 
@@ -689,7 +706,7 @@ async function recordWorkspaceSession(run: ChatRunRecord): Promise<void> {
       sid,
       wid: run.workspaceId,
       goal: (existing?.title || "Chat session").slice(0, 200),
-      status: run.status === "failed" ? "failed" : "ended",
+      status: (run.finalStatus ?? run.status) === "failed" ? "failed" : "ended",
       ts: new Date().toISOString(),
     },
   );

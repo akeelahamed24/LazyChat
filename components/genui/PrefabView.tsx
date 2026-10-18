@@ -25,6 +25,9 @@ export function PrefabView({
   const hostRef = useRef<PrefabHost | null>(null);
   const [height, setHeight] = useState(0);
   const [rendered, setRendered] = useState(false);
+  const [ready, setReady] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const theme = useAppStore((s) => s.theme);
   const dark = useMemo(() => {
     if (theme === "dark") return true;
@@ -47,7 +50,10 @@ export function PrefabView({
         onUserMessage: (t) => messageRef.current?.(t),
         onOpenLink: (url) => window.open(url, "_blank", "noopener,noreferrer"),
         onSize: (h) => setHeight(Math.min(h, 2400)),
-        onReady: () => {},
+        onReady: () => {
+          setReady(true);
+          setFailed(false);
+        },
       },
       dark ? "dark" : "light",
     );
@@ -65,6 +71,22 @@ export function PrefabView({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // The renderer must complete its handshake quickly; if it never does (blocked script, network), say so instead of
+  // leaving the card on "Waiting for content...", and let the user retry.
+  useEffect(() => {
+    if (ready) return;
+    const t = setTimeout(() => setFailed(true), 12_000);
+    return () => clearTimeout(t);
+  }, [ready, attempt]);
+
+  const retry = () => {
+    const frame = frameRef.current;
+    if (!frame) return;
+    setFailed(false);
+    setAttempt((n) => n + 1);
+    frame.src = `/prefab/index.html?retry=${Date.now()}`;
+  };
 
   useEffect(() => {
     hostRef.current?.setTheme(dark ? "dark" : "light");
@@ -84,6 +106,14 @@ export function PrefabView({
     <div className={className} data-genui-streaming={streaming || undefined}>
       <div className={`relative overflow-hidden rounded-lg border border-border bg-bg-elevated shadow-soft transition-shadow duration-500 ${streaming ? "beam-border" : ""}`}>
         {!rendered && <GenUiSkeleton />}
+        {failed && !ready && (
+          <div className="flex items-center gap-3 p-4 text-[13px] text-fg-secondary">
+            <span className="flex-1">The interface renderer did not start.</span>
+            <button className="rounded-md border border-border px-2.5 py-1 hover:bg-bg-hover" onClick={retry}>
+              Retry
+            </button>
+          </div>
+        )}
         <iframe
           ref={frameRef}
           title="Generated interface"

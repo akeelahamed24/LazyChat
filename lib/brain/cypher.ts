@@ -57,7 +57,7 @@ RETURN d, p.name AS decided_by, collect(DISTINCT s.name) AS services
 
 export const SHORTEST_PATH_BETWEEN = `
 MATCH (a {id: $from_id}), (b {id: $to_id})
-WITH a, b, shortestPath((a)-[*..6]-(b)) AS path
+WITH a, b, shortestPath((a)-[*..6]->(b)) AS path
 RETURN path
 `;
 
@@ -186,9 +186,12 @@ export async function shortestPathBetween(
   fromId: string,
   toId: string,
 ): Promise<unknown | null> {
-  const rows = await client.query(SHORTEST_PATH_BETWEEN, { from_id: fromId, to_id: toId });
-  const path = rows[0]?.path;
-  return path ?? null;
+  // FalkorDB supports only directed shortestPath: try both directions and keep the shorter.
+  const forward = (await client.query(SHORTEST_PATH_BETWEEN, { from_id: fromId, to_id: toId }))[0]?.path;
+  const backward = (await client.query(SHORTEST_PATH_BETWEEN, { from_id: toId, to_id: fromId }))[0]?.path;
+  const len = (p: unknown) => ((p as { edges?: unknown[] } | null)?.edges?.length ?? Infinity);
+  const best = len(forward) <= len(backward) ? forward : backward;
+  return best ?? null;
 }
 
 /** Subgraph of everything within `depth` hops of a node (de-duplicated). */

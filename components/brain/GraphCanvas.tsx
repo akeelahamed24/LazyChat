@@ -22,40 +22,12 @@ type Props = {
   showLabels?: boolean;
 };
 
-// Omnia palette: brand greens for the core entities, neutral greys for supporting records, and a few muted
-// semantic accents (amber tickets, red findings). All mid-luminance so they read on #121212 and #fcfcfc alike.
-const NODE_COLORS: Record<string, string> = {
-  Person: "#3ecf8e",
-  Team: "#0f9d63",
-  Service: "#8fe5bc",
-  Repo: "#5ec4a0",
-  Ticket: "#f1a10d",
-  Decision: "#52a9ff",
-  Document: "#9ca3af",
-  Message: "#7c7c7c",
-  Session: "#a3a3a3",
-  Turn: "#8a8a8a",
-  EpisodicMemory: "#34d399",
-  SemanticMemory: "#10b981",
-  ProceduralMemory: "#059669",
-  Finding: "#f56e4e",
-  AgentHandoff: "#b4b4b4",
-};
+import { nodeColor as paletteColor, relColor } from "@/lib/brain/palette";
 
-/** Brand-palette color for a node label, falling back to the server-provided color. */
+/** Colour for a node label: the shared palette (lib/brain/palette.ts), falling back to the server-provided colour. */
 export function nodeColor(label: string | undefined, fallback?: string): string {
-  return (label && NODE_COLORS[label]) || fallback || "#898989";
+  return paletteColor(label, fallback);
 }
-
-const REL_COLORS: Record<string, string> = {
-  DEPENDS_ON: "#3ecf8e",
-  BLOCKED_BY: "#f1a10d",
-  KNOWS_ABOUT: "#00c573",
-  RELATES_TO: "#898989",
-  AUTHORED: "#8fe5bc",
-  MENTIONS: "#707070",
-  DISCUSSED_IN: "#707070",
-};
 
 /** Theme colors read from CSS variables so canvas text follows light/dark. */
 function readTheme() {
@@ -152,7 +124,7 @@ export function GraphCanvas({
       ctx.beginPath();
       ctx.moveTo(s.x, s.y);
       ctx.lineTo(t.x, t.y);
-      ctx.strokeStyle = active ? REL_COLORS[link.type] ?? "#898989" : theme.line;
+      ctx.strokeStyle = active ? relColor(link.type) : theme.line;
       ctx.lineWidth = active ? 1.9 : 0.8;
       ctx.stroke();
     }

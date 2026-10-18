@@ -423,6 +423,7 @@ export function providerGlyph(provider: ProviderId): string {
     anthropic: "✦",
     openai: "◉",
     google: "◈",
+    nvidia: "◆",
     ollama: "🐙",
     lmstudio: "⬡",
     opencode: "⬢",

@@ -3,6 +3,7 @@ export type BuiltinProviderId =
   | "openai"
   | "google"
   | "sarvam"
+  | "nvidia"
   | "ollama"
   | "lmstudio"
   | "opencode";

@@ -118,7 +118,7 @@ function SpawnAgent() {
   const customProviders = useAppStore((s) => s.customProviders);
 
   const agentProviders = React.useMemo(() => {
-    const builtins: ProviderId[] = ["opencode", "anthropic", "openai", "sarvam", "google", "ollama", "lmstudio"];
+    const builtins: ProviderId[] = ["opencode", "anthropic", "openai", "sarvam", "nvidia", "google", "ollama", "lmstudio"];
     const customs = customProviders.map((c) => c.id);
     return [...customs, ...builtins];
   }, [customProviders]);

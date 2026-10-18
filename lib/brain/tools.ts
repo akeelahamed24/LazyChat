@@ -1161,6 +1161,19 @@ export async function execute(
   }
   const start = Date.now();
   let result: ToolResult;
+  // Required arguments are checked up front so a model that omits one gets a clear, fixable error.
+  const missing = (entry.input_schema.required ?? []).filter((k) => {
+    const v = args?.[k];
+    return v === undefined || v === null || (typeof v === "string" && !v.trim());
+  });
+  if (missing.length) {
+    return {
+      ...empty(name),
+      ok: false,
+      error: `missing required argument(s): ${missing.join(", ")}`,
+      summary: `${name} needs: ${missing.join(", ")}.`,
+    };
+  }
   try {
     result = await entry.executor(client, args);
   } catch (err) {

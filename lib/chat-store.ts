@@ -169,7 +169,13 @@ export async function getConversation(id: string, ownerId?: string): Promise<Sto
   if (parked) return parked;
   const meta = await getConversationMeta(id, uid);
   if (!meta) return null;
-  const docs = await listDocs(tokenFor(uid), `conversations/${id}/messages`);
+  let docs: Doc[];
+  try {
+    docs = await listDocs(tokenFor(uid), `conversations/${id}/messages`);
+  } catch (e) {
+    if (e instanceof FirestoreError && e.status === 403) return null; // not ours / not there
+    throw e;
+  }
   synced.set(id, new Map(docs.map((d) => [d.id, String(d.data.h ?? "")])));
   return { ...meta, messages: fromMessageDocs(docs) };
 }
@@ -270,7 +276,10 @@ export async function deleteConversation(id: string, ownerId?: string): Promise<
   const msgs = await listDocs(token, `conversations/${id}/messages`).catch(() => []);
   // Messages first: their rules look at the parent, which must still exist.
   await commit(token, msgs.map((d) => ({ delete: { path: `conversations/${id}/messages/${d.id}` } })));
-  await commit(token, [{ delete: { path: `conversations/${id}` } }]);
+  // The rules read `resource.data`, so deleting a document that does not exist is answered with 403. A chat that
+  // only ever lived in the outbox has no Firestore document: check first, and treat "gone" as success.
+  const exists = await getDoc(token, `conversations/${id}`).then((d) => !!d, () => false);
+  if (exists) await commit(token, [{ delete: { path: `conversations/${id}` } }]);
   synced.delete(id);
   metaCache.delete(id);
 }

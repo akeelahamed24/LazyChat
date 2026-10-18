@@ -7,7 +7,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { UIMessageChunk } from "ai";
 
-import { HEARTBEAT_CHUNK, SseParser, coalesceChunks, formatFrame } from "@/lib/sse";
+import { ChunkNormalizer, HEARTBEAT_CHUNK, SseParser, coalesceChunks, formatFrame } from "@/lib/sse";
 import { parseEventsUrl, resilientSse } from "@/lib/resilient-sse";
 
 const chunks = (): UIMessageChunk[] => {
@@ -161,6 +161,86 @@ describe("resilientSse", () => {
     const { got, done } = await collect(resilientSse(hang, { runId: "r1", fetchFn: s.fetchFn, stallMs: 20, baseDelayMs: 1 }));
     assert.ok(done);
     assert.equal(got.filter((c) => c.type === "finish").length, 1);
+  });
+});
+
+describe("ChunkNormalizer", () => {
+  const run = (input: Array<Record<string, unknown>>) => {
+    const n = new ChunkNormalizer();
+    return input.flatMap((c) => n.push(c as unknown as UIMessageChunk)).map((c) => `${c.type}${(c as { id?: string }).id ? ":" + (c as { id?: string }).id : ""}`);
+  };
+
+  it("leaves a well-formed lifecycle untouched", () => {
+    const input = [
+      { type: "start" }, { type: "start-step" },
+      { type: "reasoning-start", id: "r0" }, { type: "reasoning-delta", id: "r0", delta: "a" }, { type: "reasoning-end", id: "r0" },
+      { type: "text-start", id: "t0" }, { type: "text-delta", id: "t0", delta: "b" }, { type: "text-end", id: "t0" },
+      { type: "finish-step" }, { type: "finish" },
+    ];
+    assert.deepEqual(run(input), input.map((c) => `${c.type}${c.id ? ":" + c.id : ""}`));
+  });
+
+  it("drops a reasoning-end that arrives with no open part (the reported error)", () => {
+    assert.deepEqual(run([{ type: "reasoning-end", id: "reasoning-0" }, { type: "text-start", id: "t" }]), ["text-start:t"]);
+  });
+
+  it("drops an end that arrives after finish-step already closed the part", () => {
+    const out = run([
+      { type: "start-step" }, { type: "reasoning-start", id: "reasoning-0" }, { type: "reasoning-delta", id: "reasoning-0", delta: "x" },
+      { type: "finish-step" }, { type: "reasoning-end", id: "reasoning-0" }, { type: "finish" },
+    ]);
+    assert.deepEqual(out, ["start-step", "reasoning-start:reasoning-0", "reasoning-delta:reasoning-0", "reasoning-end:reasoning-0", "finish-step", "finish"]);
+  });
+
+  it("synthesizes a start for deltas that have none, and ignores duplicate starts", () => {
+    assert.deepEqual(run([{ type: "text-delta", id: "t", delta: "hi" }, { type: "text-start", id: "t" }, { type: "text-end", id: "t" }]), ["text-start:t", "text-delta:t", "text-end:t"]);
+  });
+
+  it("tracks parts per id and kind", () => {
+    assert.deepEqual(run([{ type: "reasoning-start", id: "a" }, { type: "text-start", id: "a" }, { type: "text-end", id: "a" }, { type: "reasoning-end", id: "a" }]), ["reasoning-start:a", "text-start:a", "text-end:a", "reasoning-end:a"]);
+  });
+});
+
+describe("resilientSse joining a run mid-way", () => {
+  const sse = (chunks: Array<Record<string, unknown>>) => new Response(
+    new ReadableStream<Uint8Array>({
+      start(c) {
+        const enc = new TextEncoder();
+        chunks.forEach((x, i) => c.enqueue(enc.encode(formatFrame(JSON.stringify(x), i + 100))));
+        c.enqueue(enc.encode(formatFrame("[DONE]")));
+        c.close();
+      },
+    }),
+    { headers: { "content-type": "text/event-stream" } },
+  );
+
+  it("never hands the AI SDK an end without a start (the reported crash)", async () => {
+    const { readUIMessageStream } = await import("ai");
+    // A stream that begins after reasoning-start / text-start were already sent.
+    const res = resilientSse(
+      sse([
+        { type: "reasoning-delta", id: "reasoning-0", delta: "thinking" },
+        { type: "reasoning-end", id: "reasoning-0" },
+        { type: "text-delta", id: "t", delta: "answer" },
+        { type: "text-end", id: "t" },
+        { type: "reasoning-end", id: "reasoning-0" },
+        { type: "finish" },
+      ]),
+      { runId: "r" },
+    );
+    const parser = new SseParser();
+    const dec = new TextDecoder();
+    const reader = res.body!.getReader();
+    const chunks: UIMessageChunk[] = [];
+    for (;;) {
+      const r = await reader.read();
+      if (r.done) break;
+      for (const f of parser.feed(dec.decode(r.value, { stream: true }))) if (f.data && f.data !== "[DONE]") chunks.push(JSON.parse(f.data));
+    }
+    let last: { parts: Array<{ type: string; text?: string }> } | null = null;
+    for await (const m of readUIMessageStream({ stream: new ReadableStream<UIMessageChunk>({ start(c) { chunks.forEach((x) => c.enqueue(x)); c.close(); } }) })) last = m as never;
+    assert.deepEqual(last!.parts.map((p) => p.type), ["reasoning", "text"]);
+    assert.equal(last!.parts[1].text, "answer");
   });
 });
 

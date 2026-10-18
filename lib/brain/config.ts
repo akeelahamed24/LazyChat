@@ -32,7 +32,9 @@ export function brainConfig() {
       host: env("FALKORDB_HOST", "localhost"),
       port: Number(env("FALKORDB_PORT", "6379")),
       graphName: env("FALKORDB_GRAPH_NAME", "company_brain"),
+      username: env("FALKORDB_USERNAME"),
       password: env("FALKORDB_PASSWORD"),
+      tls: env("FALKORDB_TLS") === "true" || env("FALKORDB_TLS") === "1",
     },
     provider,
     sarvam: {

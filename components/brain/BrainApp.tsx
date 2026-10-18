@@ -3,6 +3,7 @@
 import * as React from "react";
 import { api, streamChat, API_URL, type ActivityItem, type GraphNode, type MemoryNode, type Procedure, type SchemaInfo, type SessionSummary, type SubGraph, type TraceStep, type Turn } from "@/lib/brainApi";
 import { GraphCanvas, Legend, nodeColor } from "./GraphCanvas";
+import { OverviewGraph } from "./OverviewGraph";
 import { AgentActivity, MemoryPanel, ProceduresPanel, ReasoningTrace } from "./Panels";
 import { Button, cn, Segmented, SpotlightCard, Toggle } from "@/components/ui";
 import { OmniaMark } from "@/components/brand/OmniaLogo";
@@ -64,6 +65,7 @@ export function BrainApp() {
   const [procedures, setProcedures] = React.useState<Procedure[]>([]);
   const [justLearned, setJustLearned] = React.useState<Procedure | null>(null);
   const [detail, setDetail] = React.useState<GraphNode | null>(null);
+  const [view, setView] = React.useState<"ask" | "overview">("ask");
   const [tab, setTab] = React.useState<"graph" | "activity" | "memory">("graph");
   const [memView, setMemView] = React.useState<"memories" | "procedures">("memories");
   const [error, setError] = React.useState<string | null>(null);
@@ -159,7 +161,13 @@ export function BrainApp() {
               ]);
               break;
             case "memory":
-              if (ev.memories?.length) setMemories((m) => [...ev.memories, ...m]);
+              if (ev.memories?.length) {
+                // A memory recalled again must not be listed twice: newest recall first, one entry per id.
+                setMemories((m) => {
+                  const seen = new Set<string>();
+                  return [...ev.memories, ...m].filter((x: MemoryNode) => !seen.has(x.id) && !!seen.add(x.id));
+                });
+              }
               break;
             case "procedures":
               if (ev.procedures?.length) setProcedures((p) => mergeProcedures(p, ev.procedures!));
@@ -352,8 +360,17 @@ export function BrainApp() {
               </p>
             </div>
           </div>
+          <Segmented
+            className="mt-3"
+            value={view}
+            onChange={setView}
+            options={[
+              { value: "ask", label: "Ask" },
+              { value: "overview", label: "Overview" },
+            ]}
+          />
           <div className="mt-3 flex gap-1.5">
-            <Button size="sm" variant="primary" className="group" onClick={newSession}>
+            <Button size="sm" variant="primary" className="group" onClick={() => { setView("ask"); newSession(); }}>
               <Plus size={13} className="transition-transform duration-300 group-hover:rotate-90" /> New session
             </Button>
             <Button size="sm" variant="secondary" className="group" onClick={() => { setTab("memory"); api.memory(USER_ID).then((r) => { setMemories(r.memories); setMemStats(r.stats); }); }}>
@@ -413,8 +430,14 @@ export function BrainApp() {
         </div>
       </aside>
 
+      {view === "overview" && (
+        <section className="flex min-w-0 flex-1 flex-col">
+          <OverviewGraph onClose={() => setView("ask")} />
+        </section>
+      )}
+
       {/* ---------------- chat ---------------- */}
-      <section className="flex min-w-0 flex-1 flex-col">
+      <section className={cn("flex min-w-0 flex-1 flex-col", view === "overview" && "hidden")}>
         <div className="glass flex h-14 shrink-0 items-center gap-2 border-b border-border px-4">
           <span className="shrink-0 whitespace-nowrap text-[13.5px] font-medium text-fg">Ask the company</span>
           {messages.length === 0 && (
@@ -553,7 +576,7 @@ export function BrainApp() {
       </section>
 
       {/* ---------------- graph panel ---------------- */}
-      <aside className="flex w-[460px] shrink-0 flex-col border-l border-border bg-bg-alternative animate-slide-in-right">
+      <aside className={cn("flex w-[460px] shrink-0 flex-col border-l border-border bg-bg-alternative animate-slide-in-right", view === "overview" && "hidden")}>
         <div className="flex h-14 shrink-0 items-center gap-3 border-b border-border px-3">
           <Segmented
             className="w-[280px]"
